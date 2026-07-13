@@ -1,0 +1,4 @@
+.actrc merged; keep local secrets out
+act/secrets.local
+*.local
+testResults.xml

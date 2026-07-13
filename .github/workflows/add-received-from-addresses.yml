@@ -1,0 +1,78 @@
+name: Add received-from addresses
+
+# Discovers which of the account's own alias addresses are worth sending from
+# and adds them as "From" identities. Dry-run (whatif) by default. The report
+# (funnel counts, candidate addresses, correspondents, mailbox totals) is EMAILED
+# to the account, never written to this log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "Display name for the new identities (optional; defaults to an existing identity's name)"
+        required: false
+        type: string
+      max:
+        description: "Scan only the newest N messages (optional quick sample; blank = scan all)"
+        required: false
+        type: string
+      whatif:
+        description: "Dry run — email what WOULD be added without changing anything"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  add-received-from-addresses:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2 (2024-10-23)
+
+      - name: Enable mock mode under act
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: |
+          echo "FASTMAIL_MOCK_DIR=${{ github.workspace }}/mocks" >> "$GITHUB_ENV"
+          echo "FASTMAIL_MOCK_OUTBOX=${{ github.workspace }}/act-outbox.jsonl" >> "$GITHUB_ENV"
+
+      # act-only: the default act runner image has no pwsh; GitHub-hosted
+      # ubuntu-latest already does, so this is skipped on real runs.
+      - name: Ensure PowerShell (act only)
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: |
+          command -v pwsh >/dev/null 2>&1 && exit 0
+          . /etc/os-release
+          wget -q "https://packages.microsoft.com/config/ubuntu/${VERSION_ID}/packages-microsoft-prod.deb" -O /tmp/pmc.deb
+          sudo dpkg -i /tmp/pmc.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq powershell
+
+      # Inputs are read from the event payload (NOT interpolated into this
+      # script) and the display name is masked, so no personal data hits the log.
+      - name: Discover and add received-from addresses
+        shell: pwsh
+        env:
+          FASTMAIL_API_TOKEN: ${{ secrets.FASTMAIL_API_TOKEN }}
+          FASTMAIL_REPORT_FROM: ${{ secrets.FASTMAIL_REPORT_FROM }}
+          FASTMAIL_REPORT_TO: ${{ secrets.FASTMAIL_REPORT_TO }}
+        run: |
+          $ev = Get-Content -Raw $env:GITHUB_EVENT_PATH | ConvertFrom-Json
+          $in = $ev.inputs
+          $whatif = "$($in.whatif)" -eq 'true'
+          $params = @{}
+          $name = "$($in.name)"
+          if ($name) { Write-Host "::add-mask::$name"; $params['Name'] = $name }
+          $max = "$($in.max)"
+          if ($max) { $params['Max'] = [int]$max }
+          ./scripts/Add-ReceivedFromAddresses.ps1 @params -WhatIf:$whatif
+
+      # act-only: show the report that would have been emailed (local log only).
+      - name: Show mocked report (act only)
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: test -f "${{ github.workspace }}/act-outbox.jsonl" && cat "${{ github.workspace }}/act-outbox.jsonl" || echo "(no mock outbox)"

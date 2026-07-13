@@ -1,0 +1,14 @@
+{
+  "apiUrl": "https://api.fastmail.com/jmap/api/",
+  "downloadUrl": "https://api.fastmail.com/jmap/download/{accountId}/{blobId}/{name}",
+  "primaryAccounts": {
+    "urn:ietf:params:jmap:mail": "acct-mock",
+    "urn:ietf:params:jmap:submission": "acct-mock"
+  },
+  "capabilities": {
+    "urn:ietf:params:jmap:core": {
+      "maxObjectsInGet": 500,
+      "maxObjectsInSet": 500
+    }
+  }
+}

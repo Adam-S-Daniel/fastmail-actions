@@ -1,0 +1,5 @@
+# Config for nektos/act (https://github.com/nektos/act) — local GitHub Actions.
+# act auto-sets ACT=true, which the workflows use to switch scripts into mock
+# mode (FASTMAIL_MOCK_DIR=./mocks), so no real Fastmail token is ever needed.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+--secret-file act/secrets.example

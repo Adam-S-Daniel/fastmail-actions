@@ -1,0 +1,78 @@
+name: Add From address
+
+# Adds one or more email addresses to the Fastmail account as selectable "From"
+# (sending) identities. Dry-run (whatif) by default. The report (which contains
+# addresses) is EMAILED to the account, never written to this log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      addresses:
+        description: "Address(es) to add as From identities (space- or comma-separated)"
+        required: true
+        type: string
+      name:
+        description: "Display name for the new identities (optional; defaults to an existing identity's name)"
+        required: false
+        type: string
+      whatif:
+        description: "Dry run — email what WOULD be added without changing anything"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  add-from-address:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2 (2024-10-23)
+
+      - name: Enable mock mode under act
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: |
+          echo "FASTMAIL_MOCK_DIR=${{ github.workspace }}/mocks" >> "$GITHUB_ENV"
+          echo "FASTMAIL_MOCK_OUTBOX=${{ github.workspace }}/act-outbox.jsonl" >> "$GITHUB_ENV"
+
+      # act-only: the default act runner image has no pwsh; GitHub-hosted
+      # ubuntu-latest already does, so this is skipped on real runs.
+      - name: Ensure PowerShell (act only)
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: |
+          command -v pwsh >/dev/null 2>&1 && exit 0
+          . /etc/os-release
+          wget -q "https://packages.microsoft.com/config/ubuntu/${VERSION_ID}/packages-microsoft-prod.deb" -O /tmp/pmc.deb
+          sudo dpkg -i /tmp/pmc.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq powershell
+
+      # Inputs are read from the event payload (NOT interpolated into this
+      # script) and masked immediately, so addresses never appear in the log.
+      - name: Add From address
+        shell: pwsh
+        env:
+          FASTMAIL_API_TOKEN: ${{ secrets.FASTMAIL_API_TOKEN }}
+          FASTMAIL_REPORT_FROM: ${{ secrets.FASTMAIL_REPORT_FROM }}
+          FASTMAIL_REPORT_TO: ${{ secrets.FASTMAIL_REPORT_TO }}
+        run: |
+          $ev = Get-Content -Raw $env:GITHUB_EVENT_PATH | ConvertFrom-Json
+          $in = $ev.inputs
+          $whatif = "$($in.whatif)" -eq 'true'
+          $addresses = @("$($in.addresses)" -split '[,\s]+' | Where-Object { $_ })
+          foreach ($a in $addresses) { Write-Host "::add-mask::$a" }
+          if (-not $addresses) { throw 'No addresses supplied.' }
+          $params = @{ Address = $addresses }
+          $name = "$($in.name)"
+          if ($name) { Write-Host "::add-mask::$name"; $params['Name'] = $name }
+          ./scripts/Add-FromAddress.ps1 @params -WhatIf:$whatif
+
+      # act-only: show the report that would have been emailed (local log only).
+      - name: Show mocked report (act only)
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: test -f "${{ github.workspace }}/act-outbox.jsonl" && cat "${{ github.workspace }}/act-outbox.jsonl" || echo "(no mock outbox)"

@@ -1,0 +1,11 @@
+# Scripts and config run on the Linux runner — keep LF so pwsh, make, and bash
+# are never handed CRLF.
+* text=auto eol=lf
+*.ps1   text eol=lf
+*.psm1  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+*.json  text eol=lf
+Makefile text eol=lf
+.actrc  text eol=lf
