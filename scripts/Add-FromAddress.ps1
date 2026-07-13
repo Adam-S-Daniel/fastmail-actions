@@ -64,15 +64,18 @@ $results = Add-FastmailIdentity -Session $session -Addresses $Address -Name $dis
     -SentId $sentId -ExistingEmails $existing -Apply:$apply
 
 $modeText = if ($apply) { 'applied' } else { 'dry run' }
+$runUrl = if ($env:GITHUB_RUN_ID -and $env:GITHUB_SERVER_URL -and $env:GITHUB_REPOSITORY) {
+    "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
+} else { $null }
 $report = New-IdentityReport -Existing $existing -Results $results -WhatIf:(-not $apply) `
-    -Title 'fastmail-actions: add-from-address'
+    -Title 'fastmail-actions: add-from-address' -RunUrl $runUrl
 
 $from = if ($ReportFrom) { $ReportFrom } elseif ($env:FASTMAIL_REPORT_FROM) { $env:FASTMAIL_REPORT_FROM } else { @($existing)[0] }
 $to = if ($ReportTo) { $ReportTo } elseif ($env:FASTMAIL_REPORT_TO) { $env:FASTMAIL_REPORT_TO } else { $from }
 if (-not $from) { throw "no report From address: set FASTMAIL_REPORT_FROM (or -ReportFrom)." }
 
 Send-FastmailReport -Session $session -From $from -To $to `
-    -Subject "fastmail-actions: add-from-address ($modeText)" -BodyText $report `
+    -Subject "fastmail-actions: add-from-address ($modeText)" -BodyText $report.Text -BodyHtml $report.Html `
     -Identities $identities -Mailboxes $mailboxes | Out-Null
 
 Write-Host "add-from-address complete (mode: $modeText). Report emailed to the configured recipient."

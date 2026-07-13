@@ -25,9 +25,13 @@ BeforeAll {
             if ($DoWhatIf -eq 'true') { $splat['WhatIf'] = $true }
             & $ScriptPath @splat *>&1 | Out-String
         } -args $script:Script, $script:MockDir, $outbox, ([string]$WhatIf.IsPresent).ToLower(), $MinDate
-        $body = if (Test-Path $outbox) { (Get-Content -Raw $outbox | ConvertFrom-Json).body } else { $null }
+        $rec = if (Test-Path $outbox) { Get-Content -Raw $outbox | ConvertFrom-Json } else { $null }
         Remove-Item $outbox -ErrorAction SilentlyContinue
-        return [pscustomobject]@{ Stdout = ($stdout | Out-String); ReportBody = $body }
+        return [pscustomobject]@{
+            Stdout     = ($stdout | Out-String)
+            ReportBody = if ($rec) { $rec.body } else { $null }
+            ReportHtml = if ($rec) { $rec.html } else { $null }
+        }
     }
 }
 
@@ -45,6 +49,14 @@ Describe 'Add-ReceivedFromAddresses.ps1 (mock mode)' {
         $res.Stdout | Should -Not -Match '@example\.'
         $res.Stdout | Should -Not -Match 'scanned'
         $res.Stdout | Should -Not -Match 'stage '
+    }
+
+    It 'emails an HTML report with the added list before the candidate table' {
+        $res = Invoke-Discover -WhatIf
+        $res.ReportHtml | Should -Match '<h2'
+        $res.ReportHtml | Should -Match 'Qualifying correspondents'
+        $res.ReportHtml | Should -Match 'alias1@example\.net'
+        $res.ReportHtml.IndexOf('Would be added') | Should -BeLessThan $res.ReportHtml.IndexOf('Qualifying correspondents')
     }
 
     It 'does not propose already-existing or one-way aliases' {

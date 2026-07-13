@@ -246,12 +246,14 @@ function Invoke-JmapMock {
                             $obj = if ($create -is [System.Collections.IDictionary]) { $create[$k] } else { $create.$k }
                             $fromList = @(Get-Prop $obj 'from'); $toList = @(Get-Prop $obj 'to')
                             $bodyValues = Get-Prop $obj 'bodyValues'
-                            $bodyPart = if ($bodyValues) { Get-Prop $bodyValues 'body' } else { $null }
+                            $textPart = if ($bodyValues) { Get-Prop $bodyValues 'text' } else { $null }
+                            $htmlPart = if ($bodyValues) { Get-Prop $bodyValues 'html' } else { $null }
                             $record = [ordered]@{
                                 from    = if ($fromList.Count) { Get-Prop $fromList[0] 'email' } else { $null }
                                 to      = if ($toList.Count) { Get-Prop $toList[0] 'email' } else { $null }
                                 subject = Get-Prop $obj 'subject'
-                                body    = if ($bodyPart) { Get-Prop $bodyPart 'value' } else { $null }
+                                body    = if ($textPart) { Get-Prop $textPart 'value' } else { $null }
+                                html    = if ($htmlPart) { Get-Prop $htmlPart 'value' } else { $null }
                             }
                             Add-Content -Path $env:FASTMAIL_MOCK_OUTBOX -Value ($record | ConvertTo-Json -Depth 10 -Compress)
                         }
@@ -526,56 +528,137 @@ function Add-FastmailIdentity {
     return $results
 }
 
-# --- reporting: BUILD a string (never printed by the workflows) ---
+# --- reporting: BUILD the email body (never printed by the workflows) ---
+
+function ConvertTo-HtmlEncoded {
+    param([string]$Value)
+    return [System.Net.WebUtility]::HtmlEncode([string]$Value)
+}
 
 function New-IdentityReport {
     <#
-      Returns a plain-text report that always lists the pre-existing From
-      addresses plus the delta (would-add in a dry run, added otherwise). This is
-      emailed by Send-FastmailReport, not written to any log.
+      Returns [pscustomobject]@{ Text; Html } — the email body in both plain text
+      and polished HTML. Section order: run link, mode, summary (discover funnel),
+      the added / would-add list, candidate details (discover), pre-existing
+      addresses, then skipped/failed. Emailed by Send-FastmailReport, never logged.
     #>
     param(
         [string[]]$Existing,
         $Results,
         [switch]$WhatIf,
         [string]$Title = 'Fastmail From addresses',
-        [string[]]$Preamble
+        [string]$RunUrl,
+        [string[]]$SummaryLines,      # discover funnel/date lines
+        $CandidateDetails             # discover: @{ Address; Why } list
     )
     $mode = if ($WhatIf) { 'DRY RUN (whatif) - no changes made' } else { 'APPLIED - changes committed' }
     $existingSorted = @($Existing | Sort-Object)
     $added = @($Results | Where-Object { $_.Status -in 'added', 'would-add' })
     $skipped = @($Results | Where-Object { $_.Status -eq 'skipped' })
     $failed = @($Results | Where-Object { $_.Status -eq 'failed' })
+    $candidates = @($CandidateDetails | Where-Object { $null -ne $_ })
     $addedVerb = if ($WhatIf) { 'Would be added' } else { 'Added' }
 
-    $lines = @()
-    $lines += $Title
-    $lines += ('=' * $Title.Length)
-    $lines += ""
-    $lines += "Mode: $mode"
-    $lines += ""
-    if ($Preamble) { $lines += $Preamble; $lines += "" }
-    $lines += "Pre-existing From addresses ($($existingSorted.Count)):"
-    if ($existingSorted.Count) { foreach ($e in $existingSorted) { $lines += "  - $e" } } else { $lines += "  (none)" }
-    $lines += ""
-    $lines += "${addedVerb} ($($added.Count)):"
+    # ---- plain-text alternative ----
+    $t = @()
+    if ($RunUrl) { $t += "Run: $RunUrl"; $t += "" }
+    $t += $Title
+    $t += ('=' * $Title.Length)
+    $t += ""
+    $t += "Mode: $mode"
+    $t += ""
+    if ($SummaryLines) { $t += $SummaryLines; $t += "" }
+    $t += "${addedVerb} ($($added.Count)):"
     if ($added.Count) {
         foreach ($r in $added) {
             $suffix = if ($r.Detail) { "  ($($r.Detail))" } else { '' }
-            $lines += "  - $($r.Address)$suffix"
+            $t += "  - $($r.Address)$suffix"
         }
-    } else { $lines += "  (none)" }
+    } else { $t += "  (none)" }
+    if ($candidates.Count) {
+        $t += ""
+        $t += "Qualifying correspondents:"
+        foreach ($c in $candidates) { $t += "  - $($c.Address)   (correspondent: $($c.Why))" }
+    }
+    $t += ""
+    $t += "Pre-existing From addresses ($($existingSorted.Count)):"
+    if ($existingSorted.Count) { foreach ($e in $existingSorted) { $t += "  - $e" } } else { $t += "  (none)" }
     if ($skipped.Count) {
-        $lines += ""
-        $lines += "Skipped - already present ($($skipped.Count)):"
-        foreach ($r in $skipped) { $lines += "  - $($r.Address)" }
+        $t += ""
+        $t += "Skipped - already present ($($skipped.Count)):"
+        foreach ($r in $skipped) { $t += "  - $($r.Address)" }
     }
     if ($failed.Count) {
-        $lines += ""
-        $lines += "Failed ($($failed.Count)):"
-        foreach ($r in $failed) { $lines += "  - $($r.Address) ($($r.Detail))" }
+        $t += ""
+        $t += "Failed ($($failed.Count)):"
+        foreach ($r in $failed) { $t += "  - $($r.Address) ($($r.Detail))" }
     }
-    return ($lines -join "`n")
+    $text = ($t -join "`n")
+
+    # ---- HTML alternative (inline styles for email clients) ----
+    $badgeStyle = if ($WhatIf) { 'background:#ddf4ff;color:#0969da;' } else { 'background:#dafbe1;color:#1a7f37;' }
+    $badgeText = if ($WhatIf) { 'DRY RUN' } else { 'APPLIED' }
+    $h = New-Object System.Text.StringBuilder
+    [void]$h.Append('<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1f2328;max-width:640px;margin:0;line-height:1.5;font-size:14px;">')
+    [void]$h.Append("<h2 style=""margin:0 0 8px;font-size:20px;"">$(ConvertTo-HtmlEncoded $Title)</h2>")
+    [void]$h.Append('<div style="margin:0 0 16px;">')
+    [void]$h.Append("<span style=""display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600;$badgeStyle"">$badgeText</span>")
+    if ($RunUrl) {
+        [void]$h.Append("<a href=""$(ConvertTo-HtmlEncoded $RunUrl)"" style=""margin-left:12px;font-size:13px;color:#0969da;text-decoration:none;"">View workflow run &#8599;</a>")
+    }
+    [void]$h.Append('</div>')
+
+    if ($SummaryLines) {
+        [void]$h.Append('<div style="background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:10px 14px;font-size:13px;color:#57606a;margin:0 0 16px;">')
+        foreach ($line in $SummaryLines) { if ($line) { [void]$h.Append("<div>$(ConvertTo-HtmlEncoded $line)</div>") } }
+        [void]$h.Append('</div>')
+    }
+
+    [void]$h.Append("<h3 style=""font-size:15px;margin:16px 0 6px;"">$addedVerb <span style=""color:#8b949e;font-weight:400;"">($($added.Count))</span></h3>")
+    if ($added.Count) {
+        [void]$h.Append('<ul style="margin:0;padding-left:20px;">')
+        foreach ($r in $added) {
+            $detail = if ($r.Detail) { " <span style=""color:#8b949e;font-size:12px;"">$(ConvertTo-HtmlEncoded $r.Detail)</span>" } else { '' }
+            [void]$h.Append("<li style=""margin:2px 0;""><code style=""background:#f6f8fa;padding:1px 5px;border-radius:4px;"">$(ConvertTo-HtmlEncoded $r.Address)</code>$detail</li>")
+        }
+        [void]$h.Append('</ul>')
+    } else { [void]$h.Append('<p style="color:#8b949e;margin:0;">none</p>') }
+
+    if ($candidates.Count) {
+        [void]$h.Append('<h3 style="font-size:15px;margin:18px 0 6px;">Qualifying correspondents</h3>')
+        [void]$h.Append('<table style="border-collapse:collapse;width:100%;font-size:13px;">')
+        [void]$h.Append('<tr><th align="left" style="border-bottom:2px solid #d0d7de;padding:4px 8px;">Address</th><th align="left" style="border-bottom:2px solid #d0d7de;padding:4px 8px;">Qualifying correspondent(s)</th></tr>')
+        foreach ($c in $candidates) {
+            [void]$h.Append("<tr><td style=""border-bottom:1px solid #eaeef2;padding:4px 8px;""><code>$(ConvertTo-HtmlEncoded $c.Address)</code></td><td style=""border-bottom:1px solid #eaeef2;padding:4px 8px;color:#57606a;"">$(ConvertTo-HtmlEncoded $c.Why)</td></tr>")
+        }
+        [void]$h.Append('</table>')
+    }
+
+    [void]$h.Append("<h3 style=""font-size:15px;margin:18px 0 6px;"">Pre-existing From addresses <span style=""color:#8b949e;font-weight:400;"">($($existingSorted.Count))</span></h3>")
+    if ($existingSorted.Count) {
+        $escaped = @($existingSorted | ForEach-Object { ConvertTo-HtmlEncoded $_ })
+        [void]$h.Append('<div style="font-size:12px;color:#57606a;background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:10px 14px;word-break:break-word;">')
+        [void]$h.Append(($escaped -join ' &middot; '))
+        [void]$h.Append('</div>')
+    } else { [void]$h.Append('<p style="color:#8b949e;margin:0;">none</p>') }
+
+    if ($skipped.Count) {
+        [void]$h.Append("<h3 style=""font-size:15px;margin:18px 0 6px;"">Skipped &mdash; already present <span style=""color:#8b949e;font-weight:400;"">($($skipped.Count))</span></h3>")
+        [void]$h.Append('<ul style="margin:0;padding-left:20px;font-size:13px;color:#57606a;">')
+        foreach ($r in $skipped) { [void]$h.Append("<li><code>$(ConvertTo-HtmlEncoded $r.Address)</code></li>") }
+        [void]$h.Append('</ul>')
+    }
+    if ($failed.Count) {
+        [void]$h.Append("<h3 style=""font-size:15px;margin:18px 0 6px;color:#cf222e;"">Failed <span style=""font-weight:400;"">($($failed.Count))</span></h3>")
+        [void]$h.Append('<ul style="margin:0;padding-left:20px;font-size:13px;color:#cf222e;">')
+        foreach ($r in $failed) { [void]$h.Append("<li><code>$(ConvertTo-HtmlEncoded $r.Address)</code> &mdash; $(ConvertTo-HtmlEncoded $r.Detail)</li>") }
+        [void]$h.Append('</ul>')
+    }
+
+    [void]$h.Append('<p style="color:#8b949e;font-size:12px;margin-top:22px;border-top:1px solid #eaeef2;padding-top:10px;">Sent by fastmail-actions.</p>')
+    [void]$h.Append('</div>')
+
+    return [pscustomobject]@{ Text = $text; Html = $h.ToString() }
 }
 
 # --- send the report over JMAP EmailSubmission ---
@@ -593,6 +676,7 @@ function Send-FastmailReport {
         [Parameter(Mandatory)][string]$To,
         [Parameter(Mandatory)][string]$Subject,
         [Parameter(Mandatory)][string]$BodyText,
+        [string]$BodyHtml,
         $Identities,
         $Mailboxes
     )
@@ -606,14 +690,19 @@ function Send-FastmailReport {
     $sentId = Get-MailboxIdByRole -Session $Session -Role 'sent' -Mailboxes $Mailboxes
     if (-not $draftsId) { throw "cannot email report: no Drafts mailbox found on this account." }
 
+    # multipart/alternative: text + (optional) HTML.
     $email = [ordered]@{
         mailboxIds = @{ $draftsId = $true }
         keywords   = @{ '$draft' = $true; '$seen' = $true }
         from       = @(@{ email = $From })
         to         = @(@{ email = $To })
         subject    = $Subject
-        bodyValues = @{ body = @{ value = $BodyText; charset = 'utf-8' } }
-        textBody   = @(@{ partId = 'body'; type = 'text/plain' })
+        bodyValues = @{ text = @{ value = $BodyText; charset = 'utf-8' } }
+        textBody   = @(@{ partId = 'text'; type = 'text/plain' })
+    }
+    if ($BodyHtml) {
+        $email['bodyValues']['html'] = @{ value = $BodyHtml; charset = 'utf-8' }
+        $email['htmlBody'] = @(@{ partId = 'html'; type = 'text/html' })
     }
 
     $submission = [ordered]@{

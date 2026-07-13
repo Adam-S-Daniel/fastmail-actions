@@ -23,9 +23,13 @@ BeforeAll {
             if ($DoWhatIf -eq 'true') { $splat['WhatIf'] = $true }
             & $ScriptPath @splat *>&1 | Out-String
         } -args $script:Script, $script:MockDir, $outbox, ($AddressArg -join ','), ([string]$WhatIf.IsPresent).ToLower()
-        $body = if (Test-Path $outbox) { (Get-Content -Raw $outbox | ConvertFrom-Json).body } else { $null }
+        $rec = if (Test-Path $outbox) { Get-Content -Raw $outbox | ConvertFrom-Json } else { $null }
         Remove-Item $outbox -ErrorAction SilentlyContinue
-        return [pscustomobject]@{ Stdout = ($stdout | Out-String); ReportBody = $body }
+        return [pscustomobject]@{
+            Stdout     = ($stdout | Out-String)
+            ReportBody = if ($rec) { $rec.body } else { $null }
+            ReportHtml = if ($rec) { $rec.html } else { $null }
+        }
     }
 }
 
@@ -48,6 +52,13 @@ Describe 'Add-FromAddress.ps1 (mock mode)' {
         $res.ReportBody | Should -Match 'Added'
         $res.ReportBody | Should -Match 'brand-new@example\.net'
         $res.Stdout | Should -Not -Match '@example\.'
+    }
+
+    It 'emails an HTML alternative part' {
+        $res = Invoke-AddFrom -AddressArg 'brand-new@example.net' -WhatIf
+        $res.ReportHtml | Should -Match '<h2'
+        $res.ReportHtml | Should -Match 'brand-new@example\.net'
+        $res.ReportHtml | Should -Match 'DRY RUN'
     }
 
     It 'skips an address that is already an identity (in the emailed report)' {

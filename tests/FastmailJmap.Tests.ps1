@@ -66,13 +66,23 @@ Describe 'Select-NewIdentity' {
 }
 
 Describe 'New-IdentityReport' {
-    It 'lists pre-existing and would-add in dry-run text' {
+    It 'returns text + HTML, with the added list before candidate details and a run link' {
         $r = @([pscustomobject]@{ Address = 'new@example.net'; Status = 'would-add'; Detail = '' })
-        $text = New-IdentityReport -Existing @('a@example.net') -Results $r -WhatIf -Title 'T'
-        $text | Should -Match 'DRY RUN'
-        $text | Should -Match 'a@example\.net'
-        $text | Should -Match 'Would be added'
-        $text | Should -Match 'new@example\.net'
+        $rep = New-IdentityReport -Existing @('a@example.net') -Results $r -WhatIf -Title 'T' `
+            -RunUrl 'https://example.com/run/1' `
+            -CandidateDetails @([pscustomobject]@{ Address = 'new@example.net'; Why = 'bob@example.com' })
+        # text
+        $rep.Text | Should -Match 'DRY RUN'
+        $rep.Text | Should -Match 'Run: https://example.com/run/1'
+        $rep.Text | Should -Match 'Would be added'
+        $rep.Text | Should -Match 'Qualifying correspondents'
+        # ordering: added list precedes candidate details
+        $rep.Text.IndexOf('Would be added') | Should -BeLessThan $rep.Text.IndexOf('Qualifying correspondents')
+        # html
+        $rep.Html | Should -Match '<h2'
+        $rep.Html | Should -Match 'DRY RUN'
+        $rep.Html | Should -Match 'View workflow run'
+        $rep.Html | Should -Match 'new@example\.net'
     }
 }
 

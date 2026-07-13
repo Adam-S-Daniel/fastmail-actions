@@ -97,23 +97,23 @@ $known = @(Select-KnownCorrespondent -DeliveredMap $deliveredMap -SentRecipients
 $new = @(Select-NewIdentity -Candidates $known -ExistingEmails $existing)
 
 # All of this is personal data -> it goes into the emailed report, never stdout.
-$preamble = @()
-$preamble += "date window: messages on or after $($effectiveMinDate.ToString('yyyy-MM-dd')) (sent or received)"
-$preamble += "scanned $sentCount sent messages -> $($sentRecipients.Count) distinct recipients you have written to"
-$preamble += "scanned $($allEmails.Count) messages"
-$preamble += "stage 1: $($distinct.Count) distinct X-Delivered-To addresses"
-$preamble += "stage 2: $($known.Count) have a known correspondent"
-$preamble += "stage 3: $($new.Count) are not already identities"
+# Summary/funnel lines (shown near the top); candidate details (shown after the
+# added list, per the report layout).
+$summary = @()
+$summary += "date window: messages on or after $($effectiveMinDate.ToString('yyyy-MM-dd')) (sent or received)"
+$summary += "scanned $sentCount sent messages -> $($sentRecipients.Count) distinct recipients you have written to"
+$summary += "scanned $($allEmails.Count) messages"
+$summary += "stage 1: $($distinct.Count) distinct X-Delivered-To addresses"
+$summary += "stage 2: $($known.Count) have a known correspondent"
+$summary += "stage 3: $($new.Count) are not already identities"
 if ($allQ.Truncated) {
-    $preamble += "WARNING: scan capped at -Max=$Max messages; results are a sample, not exhaustive."
+    $summary += "WARNING: scan capped at -Max=$Max messages; results are a sample, not exhaustive."
 }
-if ($new.Count -gt 0) {
-    $preamble += ""
-    $preamble += "candidate addresses (with the correspondent that qualified them):"
-    foreach ($a in $new) {
-        $why = @($deliveredMap[$a] | Where-Object { $sentRecipients -contains $_ } | Select-Object -First 3)
-        $preamble += ("  {0}   (correspondent: {1})" -f $a, ($why -join ', '))
-    }
+
+$candidates = @()
+foreach ($a in $new) {
+    $why = @($deliveredMap[$a] | Where-Object { $sentRecipients -contains $_ } | Select-Object -First 3)
+    $candidates += [pscustomobject]@{ Address = $a; Why = ($why -join ', ') }
 }
 
 $apply = $PSCmdlet.ShouldProcess("Fastmail account", "add discovered From identities")
@@ -126,15 +126,20 @@ if ($new.Count -gt 0) {
     $results = @()
 }
 
+$runUrl = if ($env:GITHUB_RUN_ID -and $env:GITHUB_SERVER_URL -and $env:GITHUB_REPOSITORY) {
+    "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
+} else { $null }
+
 $report = New-IdentityReport -Existing $existing -Results $results -WhatIf:(-not $apply) `
-    -Title 'fastmail-actions: add-received-from-addresses' -Preamble $preamble
+    -Title 'fastmail-actions: add-received-from-addresses' -RunUrl $runUrl `
+    -SummaryLines $summary -CandidateDetails $candidates
 
 $from = if ($ReportFrom) { $ReportFrom } elseif ($env:FASTMAIL_REPORT_FROM) { $env:FASTMAIL_REPORT_FROM } else { @($existing)[0] }
 $to = if ($ReportTo) { $ReportTo } elseif ($env:FASTMAIL_REPORT_TO) { $env:FASTMAIL_REPORT_TO } else { $from }
 if (-not $from) { throw "no report From address: set FASTMAIL_REPORT_FROM (or -ReportFrom)." }
 
 Send-FastmailReport -Session $session -From $from -To $to `
-    -Subject "fastmail-actions: add-received-from-addresses ($modeText)" -BodyText $report `
+    -Subject "fastmail-actions: add-received-from-addresses ($modeText)" -BodyText $report.Text -BodyHtml $report.Html `
     -Identities $identities -Mailboxes $mailboxes | Out-Null
 
 Write-Host "add-received-from-addresses complete (mode: $modeText). Report emailed to the configured recipient."
