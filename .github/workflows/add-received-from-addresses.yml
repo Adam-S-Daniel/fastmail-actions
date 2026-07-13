@@ -6,6 +6,12 @@ name: Add received-from addresses
 # to the account, never written to this log.
 
 on:
+  # Daily automatic run. A scheduled event carries no inputs, so whatif resolves
+  # to false (applies for real) with the default 730-day window — it keeps the
+  # From-address list current without a dry run. (GitHub cron is UTC and may be
+  # delayed by several minutes; only runs from the default branch.)
+  schedule:
+    - cron: "30 16 * * *"
   workflow_dispatch:
     inputs:
       name:
