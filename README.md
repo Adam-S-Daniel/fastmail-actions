@@ -127,6 +127,7 @@ gh workflow run add-received-from-addresses.yml --repo Adam-S-Daniel/fastmail-ac
 |---|---|---|---|
 | `name` | no | — | Display name; defaults to an existing identity's name. |
 | `max` | no | — | Scan only the newest N messages (quick sample). |
+| `min_date` | no | 730 days ago | Only consider messages sent/received on or after this date (`YYYY-MM-DD`). |
 | `whatif` | yes | `true` | Dry run. |
 
 ## Repository layout

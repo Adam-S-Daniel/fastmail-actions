@@ -1,5 +1,5 @@
 {
-  "_comment": "Fake Fastmail account for ACT / Pester. Uses only reserved example.* domains — never real addresses. '_mailbox' tags which mailbox an email lives in so the fake JMAP server can honour an Email/query inMailbox filter; it is never returned to callers. Expected discovery result: would-add alias1@example.net and alias4@example.net (both have known correspondent bob@example.com; adam@example.net is dropped as an existing identity; alias2/alias3 are dropped as one-way senders). reports@example.net is the identity used as the report From/To in tests.",
+  "_comment": "Fake Fastmail account for ACT / Pester. Uses only reserved example.* domains — never real addresses. '_mailbox' tags which mailbox an email lives in so the fake JMAP server can honour an Email/query inMailbox filter; 'receivedAt' lets it honour an 'after' (min-date) filter. Neither is returned to callers. With no date filter (or a very old one) discovery would-adds alias1@example.net and alias4@example.net; with a min-date after 2019 the old messages e2/e5 drop out so alias4 (only ever seen in 2019) is no longer a candidate. reports@example.net is the identity used as the report From/To in tests.",
   "identities": [
     { "id": "i1", "email": "adam@example.net", "name": "Example User" },
     { "id": "i2", "email": "me@example.net", "name": "Example User" },
@@ -11,12 +11,12 @@
     { "id": "mb-drafts", "role": "drafts", "name": "Drafts" }
   ],
   "emails": [
-    { "id": "s1", "_mailbox": "mb-sent", "to": [{ "name": "Bob", "email": "bob@example.com" }], "cc": [], "bcc": [] },
-    { "id": "s2", "_mailbox": "mb-sent", "to": [{ "name": "Carol", "email": "carol@example.org" }], "cc": [], "bcc": [] },
-    { "id": "e1", "_mailbox": "mb-inbox", "from": [{ "name": "Bob", "email": "bob@example.com" }], "header:X-Delivered-To:asText:all": ["alias1@example.net"] },
-    { "id": "e2", "_mailbox": "mb-inbox", "from": [{ "name": "Newsletter", "email": "news@newsletter.example" }], "header:X-Delivered-To:asText:all": ["alias2@example.net"] },
-    { "id": "e3", "_mailbox": "mb-inbox", "from": [{ "name": "Carol", "email": "carol@example.org" }], "header:X-Delivered-To:asText:all": ["adam@example.net"] },
-    { "id": "e4", "_mailbox": "mb-inbox", "from": [{ "name": "Dave", "email": "dave@vendor.example" }], "header:X-Delivered-To:asText:all": ["alias3@example.net"] },
-    { "id": "e5", "_mailbox": "mb-inbox", "from": [{ "name": "Bob", "email": "bob@example.com" }], "header:X-Delivered-To:asText:all": ["alias4@example.net"] }
+    { "id": "s1", "_mailbox": "mb-sent", "receivedAt": "2025-06-01T10:00:00Z", "to": [{ "name": "Bob", "email": "bob@example.com" }], "cc": [], "bcc": [] },
+    { "id": "s2", "_mailbox": "mb-sent", "receivedAt": "2025-06-02T10:00:00Z", "to": [{ "name": "Carol", "email": "carol@example.org" }], "cc": [], "bcc": [] },
+    { "id": "e1", "_mailbox": "mb-inbox", "receivedAt": "2025-05-01T10:00:00Z", "from": [{ "name": "Bob", "email": "bob@example.com" }], "header:X-Delivered-To:asText:all": ["alias1@example.net"] },
+    { "id": "e2", "_mailbox": "mb-inbox", "receivedAt": "2019-01-01T10:00:00Z", "from": [{ "name": "Newsletter", "email": "news@newsletter.example" }], "header:X-Delivered-To:asText:all": ["alias2@example.net"] },
+    { "id": "e3", "_mailbox": "mb-inbox", "receivedAt": "2025-05-03T10:00:00Z", "from": [{ "name": "Carol", "email": "carol@example.org" }], "header:X-Delivered-To:asText:all": ["adam@example.net"] },
+    { "id": "e4", "_mailbox": "mb-inbox", "receivedAt": "2025-05-04T10:00:00Z", "from": [{ "name": "Dave", "email": "dave@vendor.example" }], "header:X-Delivered-To:asText:all": ["alias3@example.net"] },
+    { "id": "e5", "_mailbox": "mb-inbox", "receivedAt": "2019-02-01T10:00:00Z", "from": [{ "name": "Bob", "email": "bob@example.com" }], "header:X-Delivered-To:asText:all": ["alias4@example.net"] }
   ]
 }

@@ -33,6 +33,12 @@ param(
 
     [int]$Max,
 
+    # Only consider messages sent/received on or after this date. Defaults to
+    # -SinceDays days before now (730 = ~2 years) so discovery reflects aliases
+    # you have used recently rather than your entire history.
+    [datetime]$MinDate,
+    [int]$SinceDays = 730,
+
     [string]$ReportFrom,
     [string]$ReportTo,
 
@@ -60,28 +66,39 @@ if (-not $PSBoundParameters.ContainsKey('Name')) {
 $mailboxes = Get-FastmailMailboxes -Session $session
 $sentId = Get-SentMailboxId -Session $session -Mailboxes $mailboxes
 
-# Stage 0: who you have written to.
+# Date window: consider only messages on or after this instant (JMAP 'after'
+# filters on receivedAt, which is the send time for Sent mail and the delivery
+# time for received mail — "sent or received as appropriate").
+$effectiveMinDate = if ($PSBoundParameters.ContainsKey('MinDate')) {
+    $MinDate.ToUniversalTime()
+} else {
+    (Get-Date).ToUniversalTime().AddDays(-$SinceDays)
+}
+$afterStr = $effectiveMinDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+# Stage 0: who you have written to (within the window).
 $sentRecipients = @()
 $sentCount = 0
 if ($sentId) {
-    $sentQ = Get-EmailId -Session $session -Filter @{ inMailbox = $sentId } -Max $null
+    $sentQ = Get-EmailId -Session $session -Filter @{ inMailbox = $sentId; after = $afterStr } -Max $null
     $sentCount = $sentQ.Ids.Count
     $sentEmails = Get-FastmailEmail -Session $session -Ids $sentQ.Ids -Properties 'to', 'cc', 'bcc'
-    $sentRecipients = Get-SentRecipientAddress -Emails $sentEmails
+    $sentRecipients = @(Get-SentRecipientAddress -Emails $sentEmails)
 }
 
-# Stages 1-3.
+# Stages 1-3 (within the window).
 $maxArg = if ($PSBoundParameters.ContainsKey('Max')) { $Max } else { $null }
-$allQ = Get-EmailId -Session $session -Filter $null -Max $maxArg
-$allEmails = Get-FastmailEmail -Session $session -Ids $allQ.Ids -Properties 'from', (Get-DeliveredToProp)
+$allQ = Get-EmailId -Session $session -Filter @{ after = $afterStr } -Max $maxArg
+$allEmails = @(Get-FastmailEmail -Session $session -Ids $allQ.Ids -Properties 'from', (Get-DeliveredToProp))
 $deliveredMap = Get-DeliveredMap -Emails $allEmails
 
 $distinct = @($deliveredMap.Keys)
-$known = Select-KnownCorrespondent -DeliveredMap $deliveredMap -SentRecipients $sentRecipients
-$new = Select-NewIdentity -Candidates $known -ExistingEmails $existing
+$known = @(Select-KnownCorrespondent -DeliveredMap $deliveredMap -SentRecipients $sentRecipients)
+$new = @(Select-NewIdentity -Candidates $known -ExistingEmails $existing)
 
 # All of this is personal data -> it goes into the emailed report, never stdout.
 $preamble = @()
+$preamble += "date window: messages on or after $($effectiveMinDate.ToString('yyyy-MM-dd')) (sent or received)"
 $preamble += "scanned $sentCount sent messages -> $($sentRecipients.Count) distinct recipients you have written to"
 $preamble += "scanned $($allEmails.Count) messages"
 $preamble += "stage 1: $($distinct.Count) distinct X-Delivered-To addresses"

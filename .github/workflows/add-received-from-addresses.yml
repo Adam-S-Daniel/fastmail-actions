@@ -16,6 +16,10 @@ on:
         description: "Scan only the newest N messages (optional quick sample; blank = scan all)"
         required: false
         type: string
+      min_date:
+        description: "Only consider messages sent/received on or after this date (YYYY-MM-DD; blank = 730 days ago)"
+        required: false
+        type: string
       whatif:
         description: "Dry run — email what WOULD be added without changing anything"
         required: true
@@ -69,6 +73,8 @@ jobs:
           if ($name) { Write-Host "::add-mask::$name"; $params['Name'] = $name }
           $max = "$($in.max)"
           if ($max) { $params['Max'] = [int]$max }
+          $minDate = "$($in.min_date)"
+          if ($minDate) { $params['MinDate'] = [datetime]$minDate }
           ./scripts/Add-ReceivedFromAddresses.ps1 @params -WhatIf:$whatif
 
       # act-only: show the report that would have been emailed (local log only).

@@ -192,10 +192,19 @@ function Invoke-JmapMock {
             'Email/query' {
                 $filter = Get-Prop $callArgs 'filter'
                 $inMailbox = if ($filter) { Get-Prop $filter 'inMailbox' } else { $null }
+                $after = if ($filter) { Get-Prop $filter 'after' } else { $null }
                 if ($inMailbox) {
                     $sel = @($fixture.emails | Where-Object { $_._mailbox -eq $inMailbox })
                 } else {
                     $sel = @($fixture.emails)
+                }
+                if ($after) {
+                    $style = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal
+                    $afterDt = [datetime]::Parse($after, [System.Globalization.CultureInfo]::InvariantCulture, $style)
+                    $sel = @($sel | Where-Object {
+                            if (-not $_.PSObject.Properties['receivedAt']) { $true }
+                            else { ([datetime]::Parse($_.receivedAt, [System.Globalization.CultureInfo]::InvariantCulture, $style)) -ge $afterDt }
+                        })
                 }
                 $ids = @($sel | ForEach-Object { $_.id })
                 $responses += , @($name, @{ accountId = $Session.AccountId; ids = $ids; total = $ids.Count; position = 0; collapseThreads = $false }, $callId)
