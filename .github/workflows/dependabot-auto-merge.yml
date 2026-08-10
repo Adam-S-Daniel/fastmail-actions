@@ -1,0 +1,280 @@
+# Unattended-merge gate for Dependabot PRs.
+#
+# THIS REPO'S CONSTRAINT (read before touching either job below): the
+# default-branch ruleset here sets `required_approving_review_count: 0` and
+# `required_status_checks: []`. With NO required checks configured, GitHub's
+# native auto-merge REFUSES to arm — `gh pr merge --auto` errors that the PR
+# is already in a clean/mergeable state, because there is nothing for
+# auto-merge to hold the merge FOR. So job `auto-merge` below's `--auto`
+# attempt is expected to no-op on every PR in this repo; it costs nothing and
+# starts working for free the day this repo's ruleset grows a required
+# check. The workflow that actually lands PRs unattended is job `sweep`,
+# which merges DIRECTLY on a schedule instead of depending on auto-merge
+# holding for a check that doesn't exist.
+#
+# Not a `workflow_call` reusable (unlike cms-platform's
+# .github/workflows/dependabot-auto-merge.yml, which a thin per-site caller
+# invokes) — this repo isn't part of that fleet, so this file owns its own
+# triggers directly. Style, comments, and the manifest-path allowlist logic
+# are ported from cms-platform's dependabot-auto-merge.yml +
+# scripts/check-dependabot-manifest-paths.sh. This repo has no shared
+# scripts/ directory, so the allowlist is INLINED in both jobs below rather
+# than factored into a script — keep the two copies in lockstep if you
+# change it.
+name: Dependabot auto-merge
+run-name: >-
+  ${{
+    github.event_name == 'pull_request' && format('PR #{0} — {1}', github.event.pull_request.number, github.event.pull_request.title) ||
+    github.event_name == 'schedule' && format('scheduled — {0}', github.event.schedule) ||
+    github.event_name == 'workflow_dispatch' && format('manual — @{0}', github.actor) ||
+    github.event_name
+  }}
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  schedule:
+    # Daily sweep for PRs native auto-merge could never arm on this repo (see
+    # header) and for PRs stranded mid-batch the way cms-platform hit in
+    # #118-122 — see job `sweep`'s header comment for the full story.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (2026-07-17)
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base ref
+        run: git fetch origin "${{ github.event.pull_request.base.ref }}"
+
+      - name: Get Dependabot metadata
+        # Validates the PR genuinely came from Dependabot (defence in depth —
+        # the job-level `if:` above already gates on the actor).
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0 (2026-04-20)
+
+      - name: Verify only manifest paths changed
+        id: paths
+        # Path allowlist: dependency manifests/lockfiles (any directory) plus
+        # workflow YAML. Dependabot never touches anything else, so a diff
+        # outside this list means either a misconfiguration or a tampered
+        # branch — either way, refuse to auto-merge. Inline port of
+        # cms-platform's scripts/check-dependabot-manifest-paths.sh; keep in
+        # lockstep with the identical block in job `sweep` below.
+        run: |
+          set -euo pipefail
+          BASE="origin/${{ github.event.pull_request.base.ref }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          mapfile -t CHANGED < <(git diff --name-only "$BASE"..."$HEAD")
+          echo "Files changed (${BASE}...${HEAD}):"
+          printf '  %s\n' "${CHANGED[@]}"
+
+          REJECT=0
+          for f in "${CHANGED[@]}"; do
+            case "$f" in
+              package.json|*/package.json|package-lock.json|*/package-lock.json) ;;
+              Gemfile|*/Gemfile|Gemfile.lock|*/Gemfile.lock) ;;
+              pyproject.toml|*/pyproject.toml|poetry.lock|*/poetry.lock) ;;
+              requirements*.txt|*/requirements*.txt) ;;
+              .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+              *)
+                echo "::error file=$f::Dependabot PR touches non-manifest path: $f"
+                REJECT=1
+                ;;
+            esac
+          done
+
+          if [ "$REJECT" = "1" ]; then
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Disable auto-merge (path check failed)
+        if: steps.paths.outputs.safe == 'false'
+        run: |
+          gh pr merge --disable-auto "$PR_URL" || true
+          echo "::error::PR touches paths outside the dependency-manifest allowlist; auto-merge disabled."
+          exit 1
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attempt auto-merge
+        if: steps.paths.outputs.safe == 'true'
+        # `|| true`: per the header, this repo's required_status_checks: []
+        # means GitHub's native auto-merge cannot arm here — it errors that
+        # the PR is already mergeable/clean, i.e. it silently does nothing.
+        # That's expected; job `sweep` below is what actually lands these
+        # PRs. Kept so this starts working for free if the ruleset ever
+        # grows a required check.
+        run: gh pr merge --auto --squash "$PR_URL" || true
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  sweep:
+    # THE PROBLEM this job exists to solve (mirrors cms-platform's
+    # dependabot-rearm-sweep.yml, #118-122): even where native auto-merge
+    # CAN arm, Dependabot often opens several PRs against the same base in
+    # one run. As the first ones merge, every PR still open in the batch
+    # goes OUT OF DATE with the new base — and a stale branch is genuinely
+    # un-mergeable, which no amount of re-arming auto-merge can fix; only
+    # updating the branch can. On THIS repo (no required checks) native
+    # auto-merge cannot even arm in the first place (see the workflow
+    # header), so this job is the ONLY path that lands a Dependabot PR
+    # unattended: it merges DIRECTLY once the PR's own CI is green, and
+    # refreshes (rather than force-merges) a PR that has fallen behind its
+    # base so the next sweep can land it cleanly.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (2026-07-17)
+        with:
+          fetch-depth: 0
+
+      - name: Sweep open Dependabot PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "::notice::Dependabot auto-merge sweep starting."
+
+          mapfile -t PR_NUMBERS < <(gh pr list --state open --author "app/dependabot" \
+            --json number --jq '.[].number')
+
+          if [ "${#PR_NUMBERS[@]}" -eq 0 ]; then
+            echo "::notice::No open Dependabot PRs — nothing to sweep."
+            echo "merged=0 updated=0 skipped=0 failed=0"
+            exit 0
+          fi
+
+          echo "Open Dependabot PR(s): ${PR_NUMBERS[*]}"
+          MERGED=0
+          UPDATED=0
+          SKIPPED=0
+          FAILED=0
+
+          for num in "${PR_NUMBERS[@]}"; do
+            pr_json=$(gh pr view "$num" --json number,baseRefName,headRefOid,mergeable,mergeStateStatus,statusCheckRollup)
+            mergeable=$(jq -r '.mergeable' <<<"$pr_json")
+            merge_state=$(jq -r '.mergeStateStatus' <<<"$pr_json")
+            base=$(jq -r '.baseRefName' <<<"$pr_json")
+
+            if [ "$mergeable" != "MERGEABLE" ]; then
+              echo "skip #${num} — mergeable=${mergeable} (not ready to merge; will be re-evaluated on the next sweep)"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            # A check-run's `.conclusion` is null while it's still
+            # QUEUED/IN_PROGRESS (and `.state` doesn't exist on it at all —
+            # that key belongs to the older commit-status shape some
+            # actions still use), so `(.conclusion // .state) == null` for
+            # anything not yet concluded and correctly fails this test —
+            # "pending" and "still running" are treated identically to
+            # "not green yet". Also require at least one check to exist:
+            # an empty rollup means CI hasn't reported in at all yet
+            # (possible webhook lag right after the PR was (re)opened), and
+            # merging blind on zero signal is exactly the failure mode this
+            # gate exists to prevent.
+            checks_ok=$(jq -r '
+              (.statusCheckRollup | length) > 0 and
+              (all(.statusCheckRollup[]?; ((.conclusion // .state) as $c | $c == "SUCCESS" or $c == "NEUTRAL" or $c == "SKIPPED")))
+            ' <<<"$pr_json")
+            if [ "$checks_ok" != "true" ]; then
+              echo "skip #${num} — checks not all concluded green yet (mergeStateStatus=${merge_state})"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            if ! git fetch --force origin \
+              "refs/heads/${base}:refs/remotes/origin/${base}" \
+              "refs/pull/${num}/head:refs/remotes/dependabot-sweep/pr-${num}" \
+              >/dev/null 2>&1; then
+              echo "::warning::skip #${num} — could not fetch refs for the manifest re-check"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            # Re-run the SAME inline manifest-path allowlist as job
+            # `auto-merge` above — keep the two blocks in lockstep.
+            REJECT=0
+            mapfile -t CHANGED < <(git diff --name-only "origin/${base}...dependabot-sweep/pr-${num}")
+            for f in "${CHANGED[@]}"; do
+              case "$f" in
+                package.json|*/package.json|package-lock.json|*/package-lock.json) ;;
+                Gemfile|*/Gemfile|Gemfile.lock|*/Gemfile.lock) ;;
+                pyproject.toml|*/pyproject.toml|poetry.lock|*/poetry.lock) ;;
+                requirements*.txt|*/requirements*.txt) ;;
+                .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+                *)
+                  echo "::warning::#${num} touches non-manifest path on re-check: $f"
+                  REJECT=1
+                  ;;
+              esac
+            done
+            if [ "$REJECT" = "1" ]; then
+              echo "::warning::skip #${num} — diff touches a non-manifest path on re-check; leaving for human review"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            echo "act on #${num} — mergeable, checks green, manifest clean (mergeStateStatus=${merge_state})"
+
+            if gh pr merge --squash "$num"; then
+              echo "merged #${num}"
+              MERGED=$((MERGED + 1))
+              continue
+            fi
+
+            if [ "$merge_state" = "BEHIND" ]; then
+              # A stale branch is genuinely un-mergeable, and nothing short
+              # of updating it can fix that — this is the exact
+              # cms-platform #118-122 batch-strand shape: every merge
+              # advances the base and leaves its still-open siblings out of
+              # date with it. Refresh, don't retry the merge in THIS run:
+              # `gh pr update-branch` pushes a merge commit onto the head,
+              # which invalidates the checks this run just verified green
+              # and starts new ones — so #${num} cannot land in this sweep
+              # BY DESIGN. The next sweep (once the fresh checks go green)
+              # finishes it. That's a SUCCESS outcome (UPDATED), not a
+              # failure.
+              echo "#${num} — merge refused and the PR is behind ${base}; refreshing it instead of retrying"
+              if gh pr update-branch "$num"; then
+                echo "refreshed #${num} against ${base} — its checks now re-run; the next sweep merges it"
+                UPDATED=$((UPDATED + 1))
+              else
+                echo "::error::#${num} — merge was refused (behind ${base}) and \`gh pr update-branch\` also failed; needs a human"
+                FAILED=$((FAILED + 1))
+              fi
+            else
+              echo "::error::#${num} — merge was refused and the PR is not behind ${base}; needs a human"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo "::notice::Sweep complete — merged=${MERGED} updated=${UPDATED} skipped=${SKIPPED} failed=${FAILED}"
+          echo "merged=${MERGED} updated=${UPDATED} skipped=${SKIPPED} failed=${FAILED}"
+
+          # Exit non-zero ONLY when a PR could be neither merged, updated,
+          # nor legitimately skipped — a red run must mean a human is
+          # needed, same contract as cms-platform's audit-editorial-labels
+          # --fix / dependabot-rearm-sweep.
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::${FAILED} Dependabot PR(s) could be neither merged nor updated — see the errors above."
+            exit 1
+          fi
