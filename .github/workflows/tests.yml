@@ -10,13 +10,21 @@ on:
       - "scripts/**"
       - "tests/**"
       - "mocks/**"
-      - ".github/workflows/tests.yml"
+      # Any workflow change runs the suite — see the same note in
+      # repo-settings: a Dependabot action-SHA bump to a workflow file outside
+      # this list produced zero check-runs, and the unattended-merge sweep in
+      # dependabot-auto-merge.yml will not merge on zero signal.
+      - ".github/workflows/**"
   pull_request:
     paths:
       - "scripts/**"
       - "tests/**"
       - "mocks/**"
-      - ".github/workflows/tests.yml"
+      # Any workflow change runs the suite — see the same note in
+      # repo-settings: a Dependabot action-SHA bump to a workflow file outside
+      # this list produced zero check-runs, and the unattended-merge sweep in
+      # dependabot-auto-merge.yml will not merge on zero signal.
+      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
