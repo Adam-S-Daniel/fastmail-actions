@@ -7,9 +7,10 @@ name: Add received-from addresses
 
 on:
   # Daily automatic run. A scheduled event carries no inputs, so whatif resolves
-  # to false (applies for real) with the default 730-day window — it keeps the
-  # From-address list current without a dry run. (GitHub cron is UTC and may be
-  # delayed by several minutes; only runs from the default branch.)
+  # to false (applies for real) with the default 730-day window and no
+  # known-correspondent requirement — it keeps the From-address list current
+  # without a dry run. (GitHub cron is UTC and may be delayed by several
+  # minutes; only runs from the default branch.)
   schedule:
     - cron: "30 16 * * *"
   workflow_dispatch:
@@ -26,6 +27,11 @@ on:
         description: "Only consider messages sent/received on or after this date (YYYY-MM-DD; blank = 730 days ago)"
         required: false
         type: string
+      require_known_correspondent:
+        description: "Only add an alias if someone who wrote to it is also someone you have emailed (off = add every alias that has received mail)"
+        required: false
+        type: boolean
+        default: false
       whatif:
         description: "Dry run — email what WOULD be added without changing anything"
         required: true
@@ -81,7 +87,9 @@ jobs:
           if ($max) { $params['Max'] = [int]$max }
           $minDate = "$($in.min_date)"
           if ($minDate) { $params['MinDate'] = [datetime]$minDate }
-          ./scripts/Add-ReceivedFromAddresses.ps1 @params -WhatIf:$whatif
+          # Absent on a scheduled event, so this resolves to $false there.
+          $requireKnown = "$($in.require_known_correspondent)" -eq 'true'
+          ./scripts/Add-ReceivedFromAddresses.ps1 @params -WhatIf:$whatif -RequireKnownCorrespondent:$requireKnown
 
       # act-only: show the report that would have been emailed (local log only).
       - name: Show mocked report (act only)

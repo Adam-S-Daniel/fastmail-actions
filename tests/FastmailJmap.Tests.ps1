@@ -70,14 +70,16 @@ Describe 'New-IdentityReport' {
         $r = @([pscustomobject]@{ Address = 'new@example.net'; Status = 'would-add'; Detail = '' })
         $rep = New-IdentityReport -Existing @('a@example.net') -Results $r -WhatIf -Title 'T' `
             -RunUrl 'https://example.com/run/1' `
-            -CandidateDetails @([pscustomobject]@{ Address = 'new@example.net'; Why = 'bob@example.com' })
+            -CandidateDetails @([pscustomobject]@{ Address = 'new@example.net'; Why = 'known correspondent: bob@example.com' })
         # text
         $rep.Text | Should -Match 'DRY RUN'
         $rep.Text | Should -Match 'Run: https://example.com/run/1'
         $rep.Text | Should -Match 'Would be added'
-        $rep.Text | Should -Match 'Qualifying correspondents'
+        $rep.Text | Should -Match 'Candidate addresses'
+        # the caller's reason string is rendered verbatim
+        $rep.Text | Should -Match 'known correspondent: bob@example\.com'
         # ordering: added list precedes candidate details
-        $rep.Text.IndexOf('Would be added') | Should -BeLessThan $rep.Text.IndexOf('Qualifying correspondents')
+        $rep.Text.IndexOf('Would be added') | Should -BeLessThan $rep.Text.IndexOf('Candidate addresses')
         # html
         $rep.Html | Should -Match '<h2'
         $rep.Html | Should -Match 'DRY RUN'

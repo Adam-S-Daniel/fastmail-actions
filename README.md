@@ -11,7 +11,7 @@ thin wrappers that dispatch the workflows here.
 | Workflow | What it does |
 |---|---|
 | **Add From address** (`add-from-address.yml`) | Add one or more given addresses as selectable From identities. |
-| **Add received-from addresses** (`add-received-from-addresses.yml`) | Discover alias addresses you actually correspond through and add those. |
+| **Add received-from addresses** (`add-received-from-addresses.yml`) | Discover alias addresses of yours that have received mail and add those. |
 | **Tests** (`tests.yml`) | Runs the Pester suite on Linux in mock mode (CI). |
 
 ## Privacy — the report is emailed, never logged
@@ -109,6 +109,10 @@ gh workflow run add-from-address.yml --repo Adam-S-Daniel/fastmail-actions \
 # Discover alias addresses worth sending from (preview, then apply)
 gh workflow run add-received-from-addresses.yml --repo Adam-S-Daniel/fastmail-actions -f whatif=true
 gh workflow run add-received-from-addresses.yml --repo Adam-S-Daniel/fastmail-actions -f whatif=false
+
+# Same, but only aliases with a correspondent you have written to
+gh workflow run add-received-from-addresses.yml --repo Adam-S-Daniel/fastmail-actions \
+  -f require_known_correspondent=true -f whatif=true
 ```
 
 ### Inputs
@@ -128,7 +132,27 @@ gh workflow run add-received-from-addresses.yml --repo Adam-S-Daniel/fastmail-ac
 | `name` | no | — | Display name; defaults to an existing identity's name. |
 | `max` | no | — | Scan only the newest N messages (quick sample). |
 | `min_date` | no | 730 days ago | Only consider messages sent/received on or after this date (`YYYY-MM-DD`). |
+| `require_known_correspondent` | no | `false` | Require a two-way correspondent before adding an alias (see below). |
 | `whatif` | yes | `true` | Dry run. |
+
+#### `require_known_correspondent` — the two-way filter
+
+Discovery walks three stages: every distinct `X-Delivered-To` address in the
+date window → an optional correspondent filter → drop the ones that are already
+identities.
+
+The middle stage is what this input controls. With
+`require_known_correspondent = true`, an alias only qualifies if at least one
+person who wrote to it is someone **you have also sent mail to** — that drops
+aliases you only ever receive on (newsletters, vendor notifications, signup
+addresses). With it `false` — **the default, and what the daily scheduled run
+uses** — every alias that received mail in the window is a candidate, so a
+freshly used alias becomes a From address without waiting for you to have
+written to that correspondent first.
+
+The filter is off by default, not gone: the emailed report still names the known
+correspondents behind each candidate (or says `no known correspondent`), so you
+can see which ones the strict filter would have dropped.
 
 ## Repository layout
 
