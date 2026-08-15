@@ -119,7 +119,7 @@ jobs:
         # That's expected; job `sweep` below is what actually lands these
         # PRs. Kept so this starts working for free if the ruleset ever
         # grows a required check.
-        run: gh pr merge --auto --squash "$PR_URL" || true
+        run: gh pr merge --auto --merge "$PR_URL" || true
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -235,7 +235,7 @@ jobs:
 
             echo "act on #${num} — mergeable, checks green, manifest clean (mergeStateStatus=${merge_state})"
 
-            if gh pr merge --squash "$num"; then
+            if gh pr merge --merge "$num"; then
               echo "merged #${num}"
               MERGED=$((MERGED + 1))
               continue
