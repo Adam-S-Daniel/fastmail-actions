@@ -355,6 +355,10 @@ function Get-EmailId {
 function Get-FastmailEmail {
     param($Session, [string[]]$Ids, [string[]]$Properties)
     $out = @()
+    # No comma-wrap on the returns: callers collect this inline as
+    # @(Get-FastmailEmail ...), which would nest a comma-wrapped array instead of
+    # flattening it. An empty result therefore arrives as $null, which the pure
+    # stages below tolerate.
     if (-not $Ids -or $Ids.Count -eq 0) { return $out }
     $step = $Session.MaxGet
     for ($k = 0; $k -lt $Ids.Count; $k += $step) {
@@ -384,6 +388,9 @@ function Get-DeliveredMap {
     $prop = $script:DeliveredToProp
     $map = @{}
     foreach ($e in @($Emails)) {
+        # @($null) is a one-element array, so an empty scan reaches here as a
+        # single null rather than no iterations at all.
+        if ($null -eq $e) { continue }
         $senders = @()
         if ($e.PSObject.Properties['from']) {
             foreach ($f in @($e.from)) {
@@ -413,6 +420,7 @@ function Get-SentRecipientAddress {
     param($Emails)
     $set = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($e in @($Emails)) {
+        if ($null -eq $e) { continue }
         foreach ($field in 'to', 'cc', 'bcc') {
             if ($e.PSObject.Properties[$field]) {
                 foreach ($r in @($e.$field)) {

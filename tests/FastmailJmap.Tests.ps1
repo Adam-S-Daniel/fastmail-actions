@@ -43,12 +43,20 @@ Describe 'Get-DeliveredMap' {
     It 'ignores messages with no delivered-to' {
         (Get-DeliveredMap -Emails @((New-Mail $null @()))).Keys.Count | Should -Be 0
     }
+    It 'survives an empty scan (a date window with no messages)' {
+        # An empty Email/get reaches the pure stages as $null, not as an empty
+        # array; @($null) then iterates once over a null element.
+        (Get-DeliveredMap -Emails $null).Keys.Count | Should -Be 0
+    }
 }
 
 Describe 'Get-SentRecipientAddress' {
     It 'collects to/cc/bcc and lowercases' {
         $sent = @([pscustomobject]@{ to = @(@{ email = 'A@ex.com' }); cc = @(@{ email = 'b@ex.com' }); bcc = @(@{ email = 'c@ex.com' }) })
         @(Get-SentRecipientAddress -Emails $sent) | Should -Be @('a@ex.com', 'b@ex.com', 'c@ex.com')
+    }
+    It 'survives an empty scan (a date window with no sent mail)' {
+        @(Get-SentRecipientAddress -Emails $null).Count | Should -Be 0
     }
 }
 

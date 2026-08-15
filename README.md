@@ -47,6 +47,19 @@ Both action workflows take a **`whatif`** boolean input, **default `true`**.
 - **`whatif = false`** — makes the changes, then emails a report of what was
   **already present** and what was **newly added**.
 
+For `add-received-from-addresses`, the report's **subject line says whether
+anything changed**, so a run that added addresses is tellable from a no-op run
+without opening it:
+
+```
+fastmail-actions: add-received-from-addresses - 3 added
+fastmail-actions: add-received-from-addresses (applied, nothing new)
+fastmail-actions: add-received-from-addresses (dry run) - 3 would be added
+fastmail-actions: add-received-from-addresses (dry run, nothing new)
+```
+
+The subject carries a count, never an address.
+
 ## Setup — the `FASTMAIL_API_TOKEN` secret
 
 The workflows read the token from the repository secret **`FASTMAIL_API_TOKEN`**.

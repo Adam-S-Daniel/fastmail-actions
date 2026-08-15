@@ -32,6 +32,7 @@ BeforeAll {
         Remove-Item $outbox -ErrorAction SilentlyContinue
         return [pscustomobject]@{
             Stdout     = ($stdout | Out-String)
+            Subject    = if ($rec) { $rec.subject } else { $null }
             ReportBody = if ($rec) { $rec.body } else { $null }
             ReportHtml = if ($rec) { $rec.html } else { $null }
         }
@@ -90,6 +91,18 @@ Describe 'Add-ReceivedFromAddresses.ps1 (mock mode)' {
         $res.ReportBody | Should -Match 'alias1@example\.net'
         $res.ReportBody | Should -Match 'alias4@example\.net'
         $res.Stdout | Should -Not -Match '@example\.'
+    }
+
+    It 'says in the subject when aliases were added, and when none were' {
+        # A run that changed something must be tellable from a no-op run in the
+        # inbox list. A min-date past every fixture message yields no candidates.
+        (Invoke-Discover).Subject | Should -Be 'fastmail-actions: add-received-from-addresses - 4 added'
+        (Invoke-Discover -WhatIf).Subject |
+            Should -Be 'fastmail-actions: add-received-from-addresses (dry run) - 4 would be added'
+        (Invoke-Discover -MinDate '2030-01-01').Subject |
+            Should -Be 'fastmail-actions: add-received-from-addresses (applied, nothing new)'
+        (Invoke-Discover -WhatIf -MinDate '2030-01-01').Subject |
+            Should -Be 'fastmail-actions: add-received-from-addresses (dry run, nothing new)'
     }
 
     It 'a min-date filter drops aliases only seen before it' {
