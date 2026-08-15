@@ -355,6 +355,10 @@ function Get-EmailId {
 function Get-FastmailEmail {
     param($Session, [string[]]$Ids, [string[]]$Properties)
     $out = @()
+    # No comma-wrap on the returns: callers collect this inline as
+    # @(Get-FastmailEmail ...), which would nest a comma-wrapped array instead of
+    # flattening it. An empty result therefore arrives as $null, which the pure
+    # stages below tolerate.
     if (-not $Ids -or $Ids.Count -eq 0) { return $out }
     $step = $Session.MaxGet
     for ($k = 0; $k -lt $Ids.Count; $k += $step) {
@@ -384,6 +388,9 @@ function Get-DeliveredMap {
     $prop = $script:DeliveredToProp
     $map = @{}
     foreach ($e in @($Emails)) {
+        # @($null) is a one-element array, so an empty scan reaches here as a
+        # single null rather than no iterations at all.
+        if ($null -eq $e) { continue }
         $senders = @()
         if ($e.PSObject.Properties['from']) {
             foreach ($f in @($e.from)) {
@@ -413,6 +420,7 @@ function Get-SentRecipientAddress {
     param($Emails)
     $set = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($e in @($Emails)) {
+        if ($null -eq $e) { continue }
         foreach ($field in 'to', 'cc', 'bcc') {
             if ($e.PSObject.Properties[$field]) {
                 foreach ($r in @($e.$field)) {
@@ -541,6 +549,9 @@ function New-IdentityReport {
       and polished HTML. Section order: run link, mode, summary (discover funnel),
       the added / would-add list, candidate details (discover), pre-existing
       addresses, then skipped/failed. Emailed by Send-FastmailReport, never logged.
+
+      CandidateDetails carries an already-written 'Why' string per address; this
+      function renders it verbatim and does not assume what qualified an address.
     #>
     param(
         [string[]]$Existing,
@@ -577,8 +588,13 @@ function New-IdentityReport {
     } else { $t += "  (none)" }
     if ($candidates.Count) {
         $t += ""
-        $t += "Qualifying correspondents:"
-        foreach ($c in $candidates) { $t += "  - $($c.Address)   (correspondent: $($c.Why))" }
+        $t += "Candidate addresses:"
+        # The caller supplies the whole reason string: whether an alias had to
+        # have a known correspondent to qualify is the caller's policy.
+        foreach ($c in $candidates) {
+            $suffix = if ($c.Why) { "   ($($c.Why))" } else { '' }
+            $t += "  - $($c.Address)$suffix"
+        }
     }
     $t += ""
     $t += "Pre-existing From addresses ($($existingSorted.Count)):"
@@ -625,9 +641,9 @@ function New-IdentityReport {
     } else { [void]$h.Append('<p style="color:#8b949e;margin:0;">none</p>') }
 
     if ($candidates.Count) {
-        [void]$h.Append('<h3 style="font-size:15px;margin:18px 0 6px;">Qualifying correspondents</h3>')
+        [void]$h.Append('<h3 style="font-size:15px;margin:18px 0 6px;">Candidate addresses</h3>')
         [void]$h.Append('<table style="border-collapse:collapse;width:100%;font-size:13px;">')
-        [void]$h.Append('<tr><th align="left" style="border-bottom:2px solid #d0d7de;padding:4px 8px;">Address</th><th align="left" style="border-bottom:2px solid #d0d7de;padding:4px 8px;">Qualifying correspondent(s)</th></tr>')
+        [void]$h.Append('<tr><th align="left" style="border-bottom:2px solid #d0d7de;padding:4px 8px;">Address</th><th align="left" style="border-bottom:2px solid #d0d7de;padding:4px 8px;">Why</th></tr>')
         foreach ($c in $candidates) {
             [void]$h.Append("<tr><td style=""border-bottom:1px solid #eaeef2;padding:4px 8px;""><code>$(ConvertTo-HtmlEncoded $c.Address)</code></td><td style=""border-bottom:1px solid #eaeef2;padding:4px 8px;color:#57606a;"">$(ConvertTo-HtmlEncoded $c.Why)</td></tr>")
         }

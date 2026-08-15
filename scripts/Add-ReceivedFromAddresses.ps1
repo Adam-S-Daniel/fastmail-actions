@@ -7,8 +7,9 @@
 .DESCRIPTION
   Three internal stages (pure, unit-tested functions in FastmailJmap.psm1):
     1. Every distinct X-Delivered-To address across all messages.
-    2. Keep only aliases with a known correspondent (a sender you have also
-       emailed), dropping one-way addresses.
+    2. Optionally (-RequireKnownCorrespondent) keep only aliases with a known
+       correspondent (a sender you have also emailed), dropping one-way
+       addresses. Off by default: every alias from stage 1 goes through.
     3. Drop any already set up as identities.
   Survivors are added via the same Identity/set call as Add-FromAddress.
 
@@ -38,6 +39,13 @@ param(
     # you have used recently rather than your entire history.
     [datetime]$MinDate,
     [int]$SinceDays = 730,
+
+    # Stage 2. When set, an alias only qualifies if at least one person who
+    # wrote to it is someone you have also sent mail to. Off by default (and so
+    # on the schedule, which carries no inputs): every alias that has received
+    # mail in the window is a candidate. The report still names the known
+    # correspondents it found either way.
+    [switch]$RequireKnownCorrespondent,
 
     [string]$ReportFrom,
     [string]$ReportTo,
@@ -94,7 +102,10 @@ $deliveredMap = Get-DeliveredMap -Emails $allEmails
 
 $distinct = @($deliveredMap.Keys)
 $known = @(Select-KnownCorrespondent -DeliveredMap $deliveredMap -SentRecipients $sentRecipients)
-$new = @(Select-NewIdentity -Candidates $known -ExistingEmails $existing)
+# @(...) wraps the whole if: a branch that yields nothing would otherwise assign
+# $null, and .Count on $null throws under StrictMode when the window is empty.
+$qualified = @(if ($RequireKnownCorrespondent) { $known } else { $distinct | Sort-Object })
+$new = @(Select-NewIdentity -Candidates $qualified -ExistingEmails $existing)
 
 # All of this is personal data -> it goes into the emailed report, never stdout.
 # Summary/funnel lines (shown near the top); candidate details (shown after the
@@ -104,7 +115,11 @@ $summary += "date window: messages on or after $($effectiveMinDate.ToString('yyy
 $summary += "scanned $sentCount sent messages -> $($sentRecipients.Count) distinct recipients you have written to"
 $summary += "scanned $($allEmails.Count) messages"
 $summary += "stage 1: $($distinct.Count) distinct X-Delivered-To addresses"
-$summary += "stage 2: $($known.Count) have a known correspondent"
+if ($RequireKnownCorrespondent) {
+    $summary += "stage 2: $($known.Count) have a known correspondent (required)"
+} else {
+    $summary += "stage 2: known correspondent not required - all $($qualified.Count) kept ($($known.Count) have one)"
+}
 $summary += "stage 3: $($new.Count) are not already identities"
 if ($allQ.Truncated) {
     $summary += "WARNING: scan capped at -Max=$Max messages; results are a sample, not exhaustive."
@@ -113,7 +128,8 @@ if ($allQ.Truncated) {
 $candidates = @()
 foreach ($a in $new) {
     $why = @($deliveredMap[$a] | Where-Object { $sentRecipients -contains $_ } | Select-Object -First 3)
-    $candidates += [pscustomobject]@{ Address = $a; Why = ($why -join ', ') }
+    $reason = if ($why.Count) { "known correspondent: $($why -join ', ')" } else { 'no known correspondent' }
+    $candidates += [pscustomobject]@{ Address = $a; Why = $reason }
 }
 
 $apply = $PSCmdlet.ShouldProcess("Fastmail account", "add discovered From identities")
@@ -124,6 +140,18 @@ if ($new.Count -gt 0) {
         -SentId $sentId -ExistingEmails $existing -Apply:$apply
 } else {
     $results = @()
+}
+
+# Subject line: a run that changed something must be distinguishable from a
+# nothing-to-do run in the inbox list, without opening it. The count is a plain
+# number, not an address, so it stays out of the log either way.
+$addedCount = @($results | Where-Object { $_.Status -in 'added', 'would-add' }).Count
+$subject = if ($apply) {
+    if ($addedCount) { "fastmail-actions: add-received-from-addresses - $addedCount added" }
+    else { "fastmail-actions: add-received-from-addresses (applied, nothing new)" }
+} else {
+    if ($addedCount) { "fastmail-actions: add-received-from-addresses (dry run) - $addedCount would be added" }
+    else { "fastmail-actions: add-received-from-addresses (dry run, nothing new)" }
 }
 
 $runUrl = if ($env:GITHUB_RUN_ID -and $env:GITHUB_SERVER_URL -and $env:GITHUB_REPOSITORY) {
@@ -139,7 +167,7 @@ $to = if ($ReportTo) { $ReportTo } elseif ($env:FASTMAIL_REPORT_TO) { $env:FASTM
 if (-not $from) { throw "no report From address: set FASTMAIL_REPORT_FROM (or -ReportFrom)." }
 
 Send-FastmailReport -Session $session -From $from -To $to `
-    -Subject "fastmail-actions: add-received-from-addresses ($modeText)" -BodyText $report.Text -BodyHtml $report.Html `
+    -Subject $subject -BodyText $report.Text -BodyHtml $report.Html `
     -Identities $identities -Mailboxes $mailboxes | Out-Null
 
 Write-Host "add-received-from-addresses complete (mode: $modeText). Report emailed to the configured recipient."

@@ -43,12 +43,20 @@ Describe 'Get-DeliveredMap' {
     It 'ignores messages with no delivered-to' {
         (Get-DeliveredMap -Emails @((New-Mail $null @()))).Keys.Count | Should -Be 0
     }
+    It 'survives an empty scan (a date window with no messages)' {
+        # An empty Email/get reaches the pure stages as $null, not as an empty
+        # array; @($null) then iterates once over a null element.
+        (Get-DeliveredMap -Emails $null).Keys.Count | Should -Be 0
+    }
 }
 
 Describe 'Get-SentRecipientAddress' {
     It 'collects to/cc/bcc and lowercases' {
         $sent = @([pscustomobject]@{ to = @(@{ email = 'A@ex.com' }); cc = @(@{ email = 'b@ex.com' }); bcc = @(@{ email = 'c@ex.com' }) })
         @(Get-SentRecipientAddress -Emails $sent) | Should -Be @('a@ex.com', 'b@ex.com', 'c@ex.com')
+    }
+    It 'survives an empty scan (a date window with no sent mail)' {
+        @(Get-SentRecipientAddress -Emails $null).Count | Should -Be 0
     }
 }
 
@@ -70,14 +78,16 @@ Describe 'New-IdentityReport' {
         $r = @([pscustomobject]@{ Address = 'new@example.net'; Status = 'would-add'; Detail = '' })
         $rep = New-IdentityReport -Existing @('a@example.net') -Results $r -WhatIf -Title 'T' `
             -RunUrl 'https://example.com/run/1' `
-            -CandidateDetails @([pscustomobject]@{ Address = 'new@example.net'; Why = 'bob@example.com' })
+            -CandidateDetails @([pscustomobject]@{ Address = 'new@example.net'; Why = 'known correspondent: bob@example.com' })
         # text
         $rep.Text | Should -Match 'DRY RUN'
         $rep.Text | Should -Match 'Run: https://example.com/run/1'
         $rep.Text | Should -Match 'Would be added'
-        $rep.Text | Should -Match 'Qualifying correspondents'
+        $rep.Text | Should -Match 'Candidate addresses'
+        # the caller's reason string is rendered verbatim
+        $rep.Text | Should -Match 'known correspondent: bob@example\.com'
         # ordering: added list precedes candidate details
-        $rep.Text.IndexOf('Would be added') | Should -BeLessThan $rep.Text.IndexOf('Qualifying correspondents')
+        $rep.Text.IndexOf('Would be added') | Should -BeLessThan $rep.Text.IndexOf('Candidate addresses')
         # html
         $rep.Html | Should -Match '<h2'
         $rep.Html | Should -Match 'DRY RUN'
