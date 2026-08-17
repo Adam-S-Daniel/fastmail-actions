@@ -36,3 +36,18 @@ updates:
     cooldown:
       default-days: 7
       semver-major-days: 30
+
+    # cms-platform's version is NOT Dependabot's to move. The
+    # scheduled-run-health thin caller carries that version TWICE — the
+    # reusable's `uses:@<tag>` and the `platform_ref:` input that pins the
+    # audit script the reusable sparse-checks-out. The github-actions
+    # ecosystem can see only the `uses:` half, so an unignored bump moves the
+    # workflow and leaves the script pin behind: exactly the two-halves skew
+    # cms-platform#244 was filed for, after ONE platform release produced
+    # fifteen piecemeal bump PRs in jodidaniel.com (#8-#22). The ignore is
+    # deliberately UNSCOPED — an `update-types`/`versions`-scoped one would
+    # not have stopped that incident. Both CMS consumers carry this identical
+    # rule; here the two halves are bumped by hand (this repo has no
+    # platform-bump.yml, so there is no automation to conflict with either).
+    ignore:
+      - dependency-name: "Adam-S-Daniel/cms-platform/*"
