@@ -484,8 +484,43 @@ for key in sorted(skills):
     digest = skills[key]
     if not re.fullmatch(NAME + "/" + NAME, key):
         sys.exit("lock: skill key %r is not '<bundle>/<skill>'" % key)
-    if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
+    # BOTH shapes, normalised to bare hex. A committed lock of bare 64-hex
+    # values trips gitleaks' `generic-api-key` rule: a keyword-bearing skill
+    # basename (`secrets`, `oauth`, `token`, `api-…`) is the keyword, and the
+    # digest clears the 3.5 entropy gate. `sha256:` defuses it because `:` sits
+    # outside the rule's capture class, cutting the capture to 6 characters —
+    # under its 10-character floor. Entropy is not a lever (only ~0.02% of real
+    # digests fall below the gate) and a green lock today can flip red on a
+    # content change, so the value's SHAPE is the only durable fix.
+    #
+    # DO NOT DELETE THIS AS DEAD CODE because the lock in front of you is bare
+    # hex. This tolerance ships FIRST and must reach every consumer BEFORE the
+    # generator emits the prefix: the hook is pinned by sha256 in
+    # `_agent-guidance/repos.yml`, so a consumer that receives a prefixed lock
+    # while still carrying an intolerant hook rejects the whole lock and every
+    # ephemeral session there reports `skills: DEGRADED`. Both shapes stay
+    # readable for as long as any consumer might be running an older pin.
+    #
+    # Normalising HERE is what keeps this a one-site change: the bare hex flows
+    # into `skills.nul`, and from there into the `[ "$got" = "$want" ]` integrity
+    # check (`digest_dir` always prints bare hex) and into the install record —
+    # so both record readers' own `[0-9a-f]{64}` still match, and neither a
+    # re-install loop nor a purge loop can be opened by a prefixed lock.
+    #
+    # `isinstance` FIRST, and no `str()` coercion: a JSON *number* of exactly 64
+    # decimal digits stringifies into this very character class, so `str(digest)`
+    # would hand the pattern something that matches and the bogus value would
+    # flow on into the install loop's `rm -rf "$DEST/$name"` — deleting a skill
+    # this hook had already installed and verified. Before the normalisation
+    # above existed the same int reached the record writer, crashed the reader,
+    # and the lock landed on the "could not read $LOCK" verdict, which carries
+    # $LEFT_IN_PLACE and removes nothing. Refusing every non-string here keeps
+    # that fail-closed outcome rather than trading it for a destructive one.
+    matched = (re.fullmatch(r"(?:sha256:)?([0-9a-f]{64})", digest)
+               if isinstance(digest, str) else None)
+    if not matched:
         sys.exit("lock: skill %r has no sha256 digest" % key)
+    digest = matched.group(1)
     bundle, name = key.split("/", 1)
     # `synced/` is the claude.ai account-sync channel's own directory inside
     # $DEST. Nothing this hook installs is ever called that, so a lock naming it
@@ -549,7 +584,13 @@ for row in rows:
 # the writer and cannot be changed by any field's CONTENT — unlike the earlier
 # positional, newline/tab-split TSV, where one hostile value forged whole rows.
 def _write_records(path, records):
-    with open(path, "w", encoding="utf-8") as handle:
+    # newline="" on every writer that bash reads back: python's text mode
+    # translates "\n" to os.linesep, so on Windows the separators became CRLF
+    # and bash read a trailing "\r" as part of the field. That is what made
+    # `meta` fail its `^[0-9]+$` check and report a bogus framing error on
+    # every Windows session. These files are a byte-level contract with bash;
+    # the writer decides what is in them, not the platform.
+    with open(path, "w", encoding="utf-8", newline="") as handle:
         for record in records:
             for field in record:
                 handle.write(field)
@@ -591,7 +632,8 @@ _write_records(
 # The verifiable python<->bash contract: the counts bash must read back. If
 # bash reads a different number of COMPLETE records, the stream was truncated
 # or desynced and every skill's source index is suspect.
-with open(os.path.join(out_dir, "meta"), "w", encoding="utf-8") as handle:
+with open(os.path.join(out_dir, "meta"), "w", encoding="utf-8",
+          newline="") as handle:  # LF only -- see _write_records
     handle.write("%d\n%d\n" % (len(sources), len(rows)))
 PY
 then
@@ -703,17 +745,27 @@ if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=1; fi
 # deadline still lands on git itself, and the only thing lost is the reaping of
 # its helper. Degrading to a late orphan is acceptable; degrading to no deadline
 # is what this whole function exists to prevent.
+#
+# Every git here runs with EOL translation OFF. This hook decides whether to
+# install a skill by comparing a sha256 of the fetched bytes against the one
+# the lock recorded, so what it checks out has to be what the blob holds. With
+# `core.autocrlf=true` — the Windows default — git rewrites every LF on the way
+# out, so a lock generated anywhere else disagrees with every clone made here
+# and nothing is ever installed. The registry's own `.gitattributes` is not
+# enough to rely on: a federated source may not carry one.
+GIT_VERBATIM=(-c core.autocrlf=false -c core.eol=lf)
+
 run_git () {
   local left=$(( fetch_deadline - SECONDS ))
   if [ "$left" -lt 1 ]; then left=1; fi
   if [ "$HAVE_TIMEOUT" -eq 1 ]; then
-    timeout -k 5 "$left" git "$@"
+    timeout -k 5 "$left" git "${GIT_VERBATIM[@]}" "$@"
     return $?
   fi
   local monitor=0 git_pid watchdog status
   case "$-" in *m*) monitor=1 ;; esac
   set -m
-  git "$@" &
+  git "${GIT_VERBATIM[@]}" "$@" &
   git_pid=$!
   ( sleep "$left"
     kill -TERM -"$git_pid" 2>/dev/null || kill -TERM "$git_pid" 2>/dev/null
@@ -916,7 +968,7 @@ for entry in record["installed"]:
         rows.append((name, digest))
 
 with open(os.path.join(os.environ["TMP_DIR"], "recorded.nul"), "w",
-          encoding="utf-8") as handle:
+          encoding="utf-8", newline="") as handle:  # LF only -- see above
     for row in rows:
         for field in row:
             handle.write(field)
@@ -1244,7 +1296,8 @@ for entry in record["installed"]:
         # bundle. Not ours to remove, and not ours to forget either.
         plan.append(("keep", name, registry, bundle, digest))
 
-with open(os.path.join(tmp_dir, "plan.nul"), "w", encoding="utf-8") as handle:
+with open(os.path.join(tmp_dir, "plan.nul"), "w", encoding="utf-8",
+          newline="") as handle:  # LF only -- see above
     for row in plan:
         for field in row:
             handle.write(field)
@@ -1352,7 +1405,9 @@ directory = os.path.dirname(record_path) or "."
 staged_fd, staged = tempfile.mkstemp(
     dir=directory, prefix=".skills-bootstrap-installed.", suffix=".tmp")
 try:
-    with os.fdopen(staged_fd, "w", encoding="utf-8") as handle:
+    # LF only: the install record is a JSON artifact a human reads and another
+    # run parses. Its bytes should not depend on which platform wrote it.
+    with os.fdopen(staged_fd, "w", encoding="utf-8", newline="") as handle:
         handle.write(json.dumps(payload, indent=2) + "\n")
     os.replace(staged, record_path)
 except BaseException:
