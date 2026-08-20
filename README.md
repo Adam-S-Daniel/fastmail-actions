@@ -228,11 +228,15 @@ Requires Docker and `act` (`gh extension install nektos/gh-act`,
   address).
 - **Mock fixture uses only reserved `example.*` domains** — never a real address —
   so CI logs of the mock-mode tests reveal nothing.
-- **Actions are pinned to full-length commit SHAs** — never a tag or branch,
-  which are movable pointers whoever controls the upstream repo can repoint at
-  their own code. The SHA carries no trailing version comment: such a label
-  goes stale silently and then misstates the pin. Resolve a pin's version from
-  the SHA when you need it (`git ls-remote <url> | grep <sha>`).
+- **Third-party actions are pinned to full-length commit SHAs** — never a tag or
+  branch, which are movable pointers whoever controls the upstream repo can
+  repoint at their own code. The SHA carries no trailing version comment: such a
+  label goes stale silently and then misstates the pin. Resolve a pin's version
+  from the SHA when you need it (`git ls-remote <url> | grep <sha>`).
+  The one exception is a reusable workflow from a repo this account owns —
+  `scheduled-run-health.yml` calls `Adam-S-Daniel/cms-platform/...@v0.1.87`, and
+  that tag is deliberate: it is the platform's release identity, moved in
+  lockstep by its bump tooling. Do not "fix" it to a SHA.
 - `permissions: contents: read` — the workflows need no write scopes; the
   `GITHUB_TOKEN` cannot push, comment, or alter the repo.
 - The session GET disallows redirects and refuses a non-HTTPS `apiUrl`, so the
