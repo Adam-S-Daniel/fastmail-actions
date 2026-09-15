@@ -1,16 +1,33 @@
 # Unattended-merge gate for Dependabot PRs.
 #
-# THIS REPO'S CONSTRAINT (read before touching either job below): the
-# default-branch ruleset here sets `required_approving_review_count: 0` and
-# `required_status_checks: []`. With NO required checks configured, GitHub's
-# native auto-merge REFUSES to arm — `gh pr merge --auto` errors that the PR
-# is already in a clean/mergeable state, because there is nothing for
-# auto-merge to hold the merge FOR. So job `auto-merge` below's `--auto`
-# attempt is expected to no-op on every PR in this repo; it costs nothing and
-# starts working for free the day this repo's ruleset grows a required
-# check. The workflow that actually lands PRs unattended is job `sweep`,
-# which merges DIRECTLY on a schedule instead of depending on auto-merge
-# holding for a check that doesn't exist.
+# HOW A DEPENDABOT PR LANDS IN THIS REPO (read before touching either job
+# below): only job `sweep` merges, and only once EVERY check on the PR's head
+# has concluded green. Job `auto-merge` enforces the manifest-path allowlist
+# on each push and merges nothing.
+#
+# This header used to say the opposite of what happened. It said that with
+# `required_status_checks: []`, native auto-merge "REFUSES to arm", so job
+# `auto-merge`'s `gh pr merge --auto` attempt "is expected to no-op on every
+# PR in this repo". It did not no-op; it MERGED. gh only enables auto-merge
+# when the PR is not already mergeable, and it counts CLEAN, HAS_HOOKS and
+# UNSTABLE as already mergeable (cli/cli, pkg/cmd/pr/merge/merge.go,
+# `isImmediatelyMergeable`). With nothing required, a PR whose checks are
+# still running is exactly that, so gh merged it on the spot and the trailing
+# `|| true` hid it. Measured 2026-09-15: claude-memory-map#35, a major
+# actions/checkout bump, merged at 21:57:41Z; its `test` check started at
+# 21:57:47Z. Five more PRs across three repos merged the same way
+# (https://github.com/Adam-S-Daniel/cms-platform/issues/437).
+#
+# Why job `auto-merge` does not arm native auto-merge instead: auto-merge
+# waits only for the contexts a ruleset marks REQUIRED, a list kept in
+# repo-settings' fleet.yml that this file cannot see. Any check that is not
+# on that list, today or added later, would be merged over while it still
+# ran. The sweep reads the whole statusCheckRollup, required or not.
+#
+# The cost is latency: a Dependabot PR lands at the next daily sweep instead
+# of seconds after it opens. Version updates already wait out a 7-day
+# cooldown (.github/dependabot.yml); a security update waits up to a day
+# unless someone merges it by hand.
 #
 # Not a `workflow_call` reusable (unlike cms-platform's
 # .github/workflows/dependabot-auto-merge.yml, which a thin per-site caller
@@ -34,8 +51,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   schedule:
-    # Daily sweep for PRs native auto-merge could never arm on this repo (see
-    # header) and for PRs stranded mid-batch the way cms-platform hit in
+    # Daily sweep — the only unattended merge path (see header) — and the
+    # path that lands PRs stranded mid-batch the way cms-platform hit in
     # #118-122 — see job `sweep`'s header comment for the full story.
     - cron: "17 6 * * *"
   workflow_dispatch:
@@ -111,19 +128,6 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Attempt auto-merge
-        if: steps.paths.outputs.safe == 'true'
-        # `|| true`: per the header, this repo's required_status_checks: []
-        # means GitHub's native auto-merge cannot arm here — it errors that
-        # the PR is already mergeable/clean, i.e. it silently does nothing.
-        # That's expected; job `sweep` below is what actually lands these
-        # PRs. Kept so this starts working for free if the ruleset ever
-        # grows a required check.
-        run: gh pr merge --auto --merge "$PR_URL" || true
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   sweep:
     # THE PROBLEM this job exists to solve (mirrors cms-platform's
     # dependabot-rearm-sweep.yml, #118-122): even where native auto-merge
@@ -131,12 +135,12 @@ jobs:
     # one run. As the first ones merge, every PR still open in the batch
     # goes OUT OF DATE with the new base — and a stale branch is genuinely
     # un-mergeable, which no amount of re-arming auto-merge can fix; only
-    # updating the branch can. On THIS repo (no required checks) native
-    # auto-merge cannot even arm in the first place (see the workflow
-    # header), so this job is the ONLY path that lands a Dependabot PR
-    # unattended: it merges DIRECTLY once the PR's own CI is green, and
-    # refreshes (rather than force-merges) a PR that has fallen behind its
-    # base so the next sweep can land it cleanly.
+    # updating the branch can. Job `auto-merge` deliberately merges nothing
+    # (see the workflow header), so this job is the ONLY unattended merge
+    # path: it merges DIRECTLY once every check on the PR's head has
+    # concluded green — at least one of them from outside this workflow —
+    # pinned to that head, and refreshes (rather than force-merges) a PR
+    # that has fallen behind its base so the next sweep can land it cleanly.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -149,8 +153,13 @@ jobs:
       - name: Sweep open Dependabot PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SELF_WORKFLOW: ${{ github.workflow }}
         run: |
           set -euo pipefail
+          if [ -z "${SELF_WORKFLOW:-}" ]; then
+            echo "::error::SELF_WORKFLOW is empty, so this sweep cannot tell its own jobs' checks from real CI -- refusing to merge anything"
+            exit 1
+          fi
           echo "::notice::Dependabot auto-merge sweep starting."
 
           mapfile -t PR_NUMBERS < <(gh pr list --state open --author "app/dependabot" \
@@ -234,6 +243,7 @@ jobs:
             mergeable=$(jq -r '.mergeable' <<<"$pr_json")
             merge_state=$(jq -r '.mergeStateStatus' <<<"$pr_json")
             base=$(jq -r '.baseRefName' <<<"$pr_json")
+            head_sha=$(jq -r '.headRefOid' <<<"$pr_json")
 
             if [ "$mergeable" != "MERGEABLE" ]; then
               echo "skip #${num} — mergeable=${mergeable} (not ready to merge; will be re-evaluated on the next sweep)"
@@ -251,13 +261,27 @@ jobs:
             # an empty rollup means CI hasn't reported in at all yet
             # (possible webhook lag right after the PR was (re)opened), and
             # merging blind on zero signal is exactly the failure mode this
-            # gate exists to prevent.
+            # gate exists to prevent. The floor must also be met by a check
+            # from OUTSIDE this workflow: job `auto-merge` above reports
+            # SUCCESS on every Dependabot PR it runs on, so a floor that
+            # counted it could be satisfied by this workflow's own gate even
+            # when no real CI had reported at all. A legacy commit status
+            # carries no workflowName and so correctly counts as outside.
             checks_ok=$(jq -r '
               (.statusCheckRollup | length) > 0 and
               (all(.statusCheckRollup[]?; ((.conclusion // .state) as $c | $c == "SUCCESS" or $c == "NEUTRAL" or $c == "SKIPPED")))
             ' <<<"$pr_json")
             if [ "$checks_ok" != "true" ]; then
               echo "skip #${num} — checks not all concluded green yet (mergeStateStatus=${merge_state})"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            outside=$(jq -r --arg self "$SELF_WORKFLOW" '
+              any(.statusCheckRollup[]?; (.workflowName // "") != $self)
+            ' <<<"$pr_json")
+            if [ "$outside" != "true" ]; then
+              echo "skip #${num} — every check on its head comes from this workflow (${SELF_WORKFLOW}); no CI has reported on it yet"
               SKIPPED=$((SKIPPED + 1))
               continue
             fi
@@ -316,11 +340,33 @@ jobs:
               continue
             fi
 
+            if ! [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::warning::skip #${num} — headRefOid '${head_sha}' is not a 40-hex sha, so the merge cannot be pinned to the commit these checks judged"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
             echo "act on #${num} — mergeable, checks green, manifest clean (mergeStateStatus=${merge_state})"
 
-            if gh pr merge --merge "$num"; then
+            # `--match-head-commit` pins the merge to the commit these checks
+            # judged. Without it, a push landing between the snapshot above
+            # and this merge call — Dependabot rebases its other open PRs
+            # each time a sibling merges — would merge whatever the head is
+            # NOW, which no check here ever ran on.
+            if gh pr merge --merge --match-head-commit "$head_sha" "$num"; then
               echo "merged #${num}"
               MERGED=$((MERGED + 1))
+              continue
+            fi
+
+            if now_json=$(gh pr view "$num" --json headRefOid 2>/dev/null); then
+              now_head=$(jq -r '.headRefOid // empty' <<<"$now_json" 2>/dev/null) || now_head=""
+            else
+              now_head=""
+            fi
+            if [ -n "$now_head" ] && [ "$now_head" != "$head_sha" ]; then
+              echo "skip #${num} — its head moved from ${head_sha:0:7} to ${now_head:0:7} after its checks were judged; GitHub refused the pinned merge, and the next sweep judges the new head"
+              SKIPPED=$((SKIPPED + 1))
               continue
             fi
 

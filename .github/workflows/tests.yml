@@ -1,7 +1,23 @@
 name: Tests
 
 # Runs the Pester suite on Linux in mock mode (no Fastmail token needed).
-# Path-filtered: only runs when the code it actually exercises changes.
+#
+# `pester` publishes a context meant to be REQUIRED on main (cms-platform#437
+# declares it in repo-settings' fleet.yml), so a pull_request run of this job
+# must exist on every PR — a workflow-level `paths:` filter here would leave
+# the required context missing on a PR that doesn't touch a salient path,
+# and GitHub blocks a merge on a MISSING required check rather than treating
+# it as passed. So the filter lives INSIDE the job instead: step `salient`
+# below decides whether anything salient changed, and every later step is
+# gated on its output — the job still runs and reports success either way.
+# `push` to main keeps the cheap workflow-level `paths:` filter, because a
+# push to main gates no merge and skipping the job entirely costs nothing.
+# SALIENT_PATHS (in the `salient` step below) must stay equal to the
+# `push.paths` list here. Keep this job free of `name:`, a matrix,
+# `concurrency` and `timeout-minutes` — any of those can rename the
+# published context or end a run `cancelled`, and a cancelled required
+# context blocks a merge non-deterministically (see cms-platform's
+# `docs/CI-INVARIANTS.md`, "A cancelled required check blocks the merge").
 
 on:
   push:
@@ -16,15 +32,6 @@ on:
       # dependabot-auto-merge.yml will not merge on zero signal.
       - ".github/workflows/**"
   pull_request:
-    paths:
-      - "scripts/**"
-      - "tests/**"
-      - "mocks/**"
-      # Any workflow change runs the suite — see the same note in
-      # repo-settings: a Dependabot action-SHA bump to a workflow file outside
-      # this list produced zero check-runs, and the unattended-merge sweep in
-      # dependabot-auto-merge.yml will not merge on zero signal.
-      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
@@ -36,11 +43,96 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+
+      - name: Did this pull request touch a salient path?
+        id: salient
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SALIENT_PATHS: |
+            scripts/**
+            tests/**
+            mocks/**
+            .github/workflows/**
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r entry; do
+            if [ -z "$entry" ]; then
+              continue
+            fi
+            case "$entry" in
+              *"/**")
+                prefix="${entry%/**}"
+                if [ -z "$prefix" ]; then
+                  echo "::error::SALIENT_PATHS entry '${entry}' is not a valid exact path or <prefix>/** glob"
+                  exit 1
+                fi
+                case "$prefix" in
+                  *'*'*)
+                    echo "::error::SALIENT_PATHS entry '${entry}' is not a valid exact path or <prefix>/** glob"
+                    exit 1
+                    ;;
+                esac
+                ;;
+              *'*'*)
+                echo "::error::SALIENT_PATHS entry '${entry}' is not a valid exact path or <prefix>/** glob"
+                exit 1
+                ;;
+            esac
+          done <<<"$SALIENT_PATHS"
+
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull_request event (event=${EVENT_NAME}); running the suite unconditionally"
+            exit 0
+          fi
+
+          # The pull_request checkout is GitHub's synthetic merge commit; its
+          # first parent is the base branch tip, so diffing against HEAD^1
+          # gives exactly the files this PR changes.
+          if ! changed=$(git diff --name-only HEAD^1 HEAD 2>&1); then
+            first_line=$(printf '%s\n' "$changed" | head -n1)
+            echo "::warning::could not diff the merge commit against its base (${first_line}); running the suite unconditionally"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          run=false
+          while IFS= read -r file; do
+            if [ -z "$file" ]; then
+              continue
+            fi
+            while IFS= read -r entry; do
+              if [ -z "$entry" ]; then
+                continue
+              fi
+              case "$entry" in
+                *"/**")
+                  prefix="${entry%/**}"
+                  case "$file" in
+                    "${prefix}"/*)
+                      run=true
+                      ;;
+                  esac
+                  ;;
+                *)
+                  if [ "$file" = "$entry" ]; then
+                    run=true
+                  fi
+                  ;;
+              esac
+            done <<<"$SALIENT_PATHS"
+          done <<<"$changed"
+
+          echo "run=${run}" >> "$GITHUB_OUTPUT"
+          echo "salient change check: run=${run}"
 
       # act-only: the default act runner image has no pwsh; GitHub-hosted
       # ubuntu-latest already does, so this is skipped on real runs.
       - name: Ensure PowerShell (act only)
-        if: ${{ env.ACT == 'true' }}
+        if: ${{ steps.salient.outputs.run == 'true' && env.ACT == 'true' }}
         shell: bash
         run: |
           command -v pwsh >/dev/null 2>&1 && exit 0
@@ -51,6 +143,7 @@ jobs:
           sudo apt-get install -y -qq powershell
 
       - name: Install Pester
+        if: steps.salient.outputs.run == 'true'
         shell: pwsh
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
@@ -58,6 +151,7 @@ jobs:
           (Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1).Version.ToString()
 
       - name: Run Pester (mock mode)
+        if: steps.salient.outputs.run == 'true'
         shell: pwsh
         env:
           FASTMAIL_MOCK_DIR: ${{ github.workspace }}/mocks
@@ -71,8 +165,12 @@ jobs:
           Invoke-Pester -Configuration $cfg
 
       - name: Upload test results
-        if: always()
+        if: always() && steps.salient.outputs.run == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: pester-results
           path: testResults.xml
+
+      - name: No salient path changed
+        if: steps.salient.outputs.run != 'true'
+        run: echo "::notice::No salient path changed — Pester suite skipped; reporting success so the required 'pester' context is present."
