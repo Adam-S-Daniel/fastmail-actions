@@ -23,19 +23,25 @@ updates:
     # cms-platform/AGENTS.md, "SHA-pin every workflow `uses:`"), matching
     # cms-platform's own .github/dependabot.yml.
     #
-    # Majors wait longer (30 days) because a major is the class that has
-    # actually needed reverting elsewhere in this account (cms-platform's
-    # AGENTS.md records setup-node 6->7 needing a revert, and the Decap
-    # bundle bump kept deliberately revertible). 30 days gives upstream room
-    # to yank or patch a bad major while patches/minors keep flowing weekly.
-    #
-    # semver-minor-days / semver-patch-days are deliberately left undefined:
-    # GitHub's documented precedence falls an undefined `semver-*-days` back
-    # to `default-days`, so spelling them out would only invite the two
-    # numbers to drift apart from `default-days` over time.
+    # NO semver-major-days (and no semver-minor-days / semver-patch-days
+    # either): GitHub's Dependabot options reference supports only
+    # `default-days` for the github-actions ecosystem, not per-SemVer-tier
+    # cooldown. Every actions bump, majors included, waits the flat 7 days
+    # above. Adding any `semver-*-days` key here is a schema validation
+    # error, not a key Dependabot quietly ignores: GitHub rejects the file
+    # and no update runs. This file shipped with `semver-major-days: 30` on
+    # 2026-08-10. GitHub's `dependabot` check on that commit failed with "The
+    # property '#/updates/0/cooldown/semver-major-days' is not supported for
+    # the package ecosystem 'github-actions'"
+    # (https://github.com/Adam-S-Daniel/fastmail-actions/runs/93574173055), and
+    # no update job ran until the key was removed
+    # (https://github.com/Adam-S-Daniel/claude-memory-map/issues/31). That
+    # check runs only once the file is on main, so a PR never shows it
+    # (https://github.com/Adam-S-Daniel/cms-platform/issues/429).
+    # dependabot/dependabot-core#14628 is the open upstream request to add
+    # the support.
     cooldown:
       default-days: 7
-      semver-major-days: 30
 
     # cms-platform's version is NOT Dependabot's to move. The
     # scheduled-run-health thin caller carries that version TWICE — the
