@@ -42,18 +42,18 @@ updates:
     # the support.
     cooldown:
       default-days: 7
-
-    # cms-platform's version is NOT Dependabot's to move. The
-    # scheduled-run-health thin caller carries that version TWICE — the
-    # reusable's `uses:@<tag>` and the `platform_ref:` input that pins the
-    # audit script the reusable sparse-checks-out. The github-actions
-    # ecosystem can see only the `uses:` half, so an unignored bump moves the
-    # workflow and leaves the script pin behind: exactly the two-halves skew
-    # cms-platform#244 was filed for, after ONE platform release produced
-    # fifteen piecemeal bump PRs in jodidaniel.com (#8-#22). The ignore is
-    # deliberately UNSCOPED — an `update-types`/`versions`-scoped one would
-    # not have stopped that incident. Both CMS consumers carry this identical
-    # rule; here the two halves are bumped by hand (this repo has no
-    # platform-bump.yml, so there is no automation to conflict with either).
-    ignore:
-      - dependency-name: "Adam-S-Daniel/cms-platform/*"
+      # cms-platform releases are this account's own code, gated by its own
+      # required checks before a tag ever exists, so they don't need the
+      # 7-day cooling-off above — that applies to third-party actions. This
+      # entry used to ignore cms-platform bumps outright: the
+      # scheduled-run-health thin caller carried the platform version TWICE
+      # (the reusable's `uses:@<tag>` and a `platform_ref:` input), and this
+      # ecosystem saw only the `uses:` half, so an unignored bump would have
+      # moved the workflow and left the script pin behind — exactly the
+      # two-halves skew cms-platform#244 was filed for, after ONE platform
+      # release produced fifteen piecemeal bump PRs in jodidaniel.com
+      # (#8-#22). The reusable now resolves its own script commit from the
+      # job context, so the caller names the version once, and this exclude
+      # is what lets that one bump land without the third-party wait
+      # (https://github.com/Adam-S-Daniel/cms-platform/issues/424).
+      exclude: ["Adam-S-Daniel/cms-platform/*"]
