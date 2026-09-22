@@ -270,13 +270,13 @@ CLOSED without `gitleaks` on `PATH`, which a fresh container lacks
 
 ## Dependency updates
 
-Dependabot runs with a **minimum package age** (`cooldown`): `default-days: 7`,
-`semver-major-days: 30`. Version updates only (a security advisory bypasses
-it); unset `cooldown` is **not** "no wait" (GitHub's implicit minimum is 3
-days); `semver-minor-days` / `semver-patch-days` stay undefined and fall back
-to `default-days`. A package you add or bump **by hand** has no automation
-watching it: check `npm view <pkg> time --json`, take the newest release that
-has cleared 7 days, pin it exact (no caret).
+Dependabot `cooldown`: `default-days: 7` always, `semver-major-days: 30` where
+supported, never `github-actions` (#133). Version updates only (an advisory
+bypasses it); unset `cooldown` isn't "no wait" (GitHub's implicit minimum: 3
+days); `semver-minor-days` / `semver-patch-days` stay undefined, falling back
+to `default-days`. A package added or bumped **by hand** has no automation
+watching it: check `npm view <pkg> time --json`, take the newest release past
+7 days, pin it exact (no caret).
 
 ## A name you choose becomes data a scanner reads
 
@@ -447,8 +447,8 @@ refresh does not move a federated bundle. Neither check belongs in a repo's
   cms-platform-managed repos (`cms-platform`, `adamdaniel.ai`,
   `jodidaniel.com`), kept for Decap publishing. Squash strands commits a
   lockfile pins by sha (2026-08-15: `cannot resolve ref`).
-- **A closing keyword beside an issue number closes it from any commit
-  message, backticks or not** (a merge-time `--body` or `PR_BODY` too),
-  unseen by the PR's linked issues: cms-platform#283 closed unfixed via
-  `78617e1` (tests: _agent-guidance#132). Keep the keyword off the number
-  anywhere; after merging, check that issues meant to stay open are.
+- **A closing keyword before `#N` or an issue/PR URL, any repo, closes it,
+  PRs too**, from a PR body or any commit message (`--body`, `PR_BODY`);
+  don't count on backticks, and linked issues won't show it
+  (cms-platform#283 via `78617e1`, _agent-guidance#136 by cms-platform#434).
+  Keep the keyword off both; after merging, check what should stay open is.
