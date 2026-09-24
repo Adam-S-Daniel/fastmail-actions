@@ -348,7 +348,7 @@ jobs:
               # below cannot clear this either. Detect and name it before
               # the generic ruleset diagnosis runs. The refs below were
               # fetched by the `git fetch --force origin` call above.
-              if overlap=$(bash .github/scripts/workflow-overlap.sh"origin/${base}" "dependabot-sweep/pr-${num}" 2>/dev/null) && [ -n "$overlap" ]; then
+              if overlap=$(bash .github/scripts/workflow-overlap.sh "origin/${base}" "dependabot-sweep/pr-${num}" 2>/dev/null) && [ -n "$overlap" ]; then
                 echo "::error::blocked #${num} — is behind ${base}, and ${base} has since changed workflow file(s) this PR also changes ($(paste -sd, <<<"$overlap")), so merging it would write workflow content neither side contains, which GITHUB_TOKEN is never allowed to do (and \`gh pr update-branch\` would be refused the same way). Remedy: someone with push access comments \`@dependabot rebase\` on the PR (Dependabot ignores that command from github-actions[bot]); the next sweep then merges it."
                 BLOCKED_PRS=$((BLOCKED_PRS + 1))
                 WORKFLOW_OVERLAP_PRS=$((WORKFLOW_OVERLAP_PRS + 1))
