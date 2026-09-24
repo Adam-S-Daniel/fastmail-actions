@@ -45,7 +45,7 @@ foreach ($c in 'act', 'gh act') {
     if (Get-Command $exe -ErrorAction SilentlyContinue) { $actCmd = $c; break }
 }
 if (-not $actCmd) {
-    throw "act not found. Install it (e.g. 'gh extension install nektos/gh-act', 'winget install nektos.act', or 'brew install act') and ensure Docker is running."
+    throw "act not found. Install it pinned to v0.2.89 (see README.md#local-testing) and ensure Docker is running."
 }
 
 $workflows = @{
