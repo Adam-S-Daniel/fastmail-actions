@@ -1,5 +1,10 @@
 # Config for nektos/act (https://github.com/nektos/act) — local GitHub Actions.
 # act auto-sets ACT=true, which the workflows use to switch scripts into mock
 # mode (FASTMAIL_MOCK_DIR=./mocks), so no real Fastmail token is ever needed.
--P ubuntu-latest=catthehacker/ubuntu:act-latest
+# Pinned to a dated tag + digest (not the floating act-latest) so a new image
+# build doesn't land here the day it's pushed — a 7-day cooling-off period.
+# To move it: pick a dated tag at least 7 days old from
+# https://hub.docker.com/r/catthehacker/ubuntu/tags and read its digest from
+# https://hub.docker.com/v2/repositories/catthehacker/ubuntu/tags/<tag>.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest-20260815@sha256:c58e2b364da03b0c804c7d660f2ecbedf2f221a382b9baa0b344b0144780ff43
 --secret-file act/secrets.example

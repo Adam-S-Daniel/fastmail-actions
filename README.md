@@ -216,8 +216,20 @@ pwsh ./test-local.ps1 -Act                         # all workflows,  or: make ac
 pwsh ./test-local.ps1 -Act -Job add-from-address   # a single one
 ```
 
-Requires Docker and `act` (`gh extension install nektos/gh-act`,
-`winget install nektos.act`, or `brew install act`).
+Requires Docker and `act`, pinned to [v0.2.89](https://github.com/nektos/act/releases/tag/v0.2.89)
+(7-day cooling-off; unpinned installs adopt a new build same-day):
+
+```sh
+gh extension install nektos/gh-act --pin v0.2.89   # gh extension
+winget install nektos.act --version 0.2.89          # Windows
+
+# Linux/macOS: download the release binary and verify its checksum
+gh release download v0.2.89 --repo nektos/act -p 'act_Linux_x86_64.tar.gz' -p checksums.txt
+sha256sum -c --ignore-missing checksums.txt
+```
+
+(`brew install act` always installs the latest formula and can't pin a
+version, so it's not listed here.)
 
 ## Security & privacy notes
 
