@@ -13,6 +13,22 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # GROUPING — one weekly run opens ONE PR for every third-party action
+    # bump instead of sibling PRs that land in the same run and often edit
+    # the same workflow files. That sibling shape is what produced #20 and
+    # #21: both came out of the same run and both edited tests.yml; once #21
+    # merged, GITHUB_TOKEN could no longer merge #20 (see
+    # https://github.com/Adam-S-Daniel/fastmail-actions/issues/24) until
+    # Dependabot rebased it on its own -- five days of red sweeps with a
+    # daily human-looking alert that no human could actually clear any
+    # sooner. cms-platform is excluded because it already skips the 7-day
+    # cooldown below (see that key's `exclude`) and arrives on its own
+    # schedule; grouping it with the third-party batch would tie its faster
+    # cadence to the slower one's weekly run.
+    groups:
+      github-actions:
+        patterns: ["*"]
+        exclude-patterns: ["Adam-S-Daniel/cms-platform/*"]
     # MINIMUM PACKAGE AGE ("cooldown") — how long a release must exist before
     # Dependabot will even OPEN the PR. Version updates ONLY: security
     # updates bypass cooldown by GitHub's spec, so an advisory still opens

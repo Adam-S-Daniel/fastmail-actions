@@ -176,6 +176,7 @@ jobs:
           UPDATED=0
           SKIPPED=0
           BLOCKED_PRS=0
+          WORKFLOW_OVERLAP_PRS=0
           FAILED=0
 
           # Why the base branch policy is refusing, re-probed whenever the
@@ -334,6 +335,26 @@ jobs:
             # state this sweep can fix, and does, further down by refreshing
             # the branch rather than retrying the merge.
             if [ "$merge_state" = "BLOCKED" ]; then
+              # Root cause named in
+              # https://github.com/Adam-S-Daniel/fastmail-actions/issues/24 :
+              # GITHUB_TOKEN can never hold the `workflows` permission, so
+              # GitHub refuses any merge whose 3-way result would WRITE a
+              # workflow blob that neither side already has -- exactly what
+              # happens when this PR is behind ${base} and ${base} has,
+              # since they diverged, changed a .github/workflows/* file this
+              # PR also changes (measured on #20: base's tests.yml was
+              # changed by the already-merged #21). `gh pr update-branch`
+              # hits the identical refusal, so the BEHIND handling further
+              # below cannot clear this either. Detect and name it before
+              # the generic ruleset diagnosis runs. The refs below were
+              # fetched by the `git fetch --force origin` call above.
+              if overlap=$(bash .github/scripts/workflow-overlap.sh"origin/${base}" "dependabot-sweep/pr-${num}" 2>/dev/null) && [ -n "$overlap" ]; then
+                echo "::error::blocked #${num} — is behind ${base}, and ${base} has since changed workflow file(s) this PR also changes ($(paste -sd, <<<"$overlap")), so merging it would write workflow content neither side contains, which GITHUB_TOKEN is never allowed to do (and \`gh pr update-branch\` would be refused the same way). Remedy: someone with push access comments \`@dependabot rebase\` on the PR (Dependabot ignores that command from github-actions[bot]); the next sweep then merges it."
+                BLOCKED_PRS=$((BLOCKED_PRS + 1))
+                WORKFLOW_OVERLAP_PRS=$((WORKFLOW_OVERLAP_PRS + 1))
+                continue
+              fi
+
               diagnose_blocked "$base"
               echo "::error::blocked #${num} — mergeable with green checks, but GitHub's base branch policy refuses the merge (mergeStateStatus=BLOCKED); not attempting it. Cause (base ${base}): ${BLOCKED_CAUSE}"
               BLOCKED_PRS=$((BLOCKED_PRS + 1))
@@ -422,14 +443,22 @@ jobs:
           # What was wrong before was never the red — it was that the red
           # said nothing.
           if [ "$BLOCKED_PRS" -gt 0 ]; then
-            # shellcheck disable=SC2086  # deliberate word-splitting: count bases
-            set -- ${BLOCKED_BASES}
-            if [ "$#" -gt 1 ]; then
-              # BLOCKED_CAUSE holds only the LAST base probed, so naming it
-              # here would attribute one branch's policy to every branch.
-              echo "::error::${BLOCKED_PRS} Dependabot PR(s) blocked by the base branch policy across $# base branches (${BLOCKED_BASES}) — see the per-PR causes above."
+            if [ "$WORKFLOW_OVERLAP_PRS" -eq "$BLOCKED_PRS" ]; then
+              # Every blocked PR this run was the workflow-overlap shape
+              # named above: diagnose_blocked never ran, so BLOCKED_CAUSE
+              # and BLOCKED_BASES are empty. Name the real cause and remedy
+              # instead of printing an empty cause.
+              echo "::error::${BLOCKED_PRS} Dependabot PR(s) blocked because their base branch changed a workflow file they also change while they were behind it — GITHUB_TOKEN can never write the resulting merged workflow blob, and \`gh pr update-branch\` is refused the same way. Remedy: someone with push access comments \`@dependabot rebase\` on each PR; the next sweep then merges it."
             else
-              echo "::error::${BLOCKED_PRS} Dependabot PR(s) blocked by the base branch policy — ${BLOCKED_CAUSE}"
+              # shellcheck disable=SC2086  # deliberate word-splitting: count bases
+              set -- ${BLOCKED_BASES}
+              if [ "$#" -gt 1 ]; then
+                # BLOCKED_CAUSE holds only the LAST base probed, so naming it
+                # here would attribute one branch's policy to every branch.
+                echo "::error::${BLOCKED_PRS} Dependabot PR(s) blocked by the base branch policy across $# base branches (${BLOCKED_BASES}) — see the per-PR causes above."
+              else
+                echo "::error::${BLOCKED_PRS} Dependabot PR(s) blocked by the base branch policy — ${BLOCKED_CAUSE}"
+              fi
             fi
           fi
           if [ "$FAILED" -gt 0 ]; then
