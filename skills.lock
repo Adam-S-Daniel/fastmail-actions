@@ -1,19 +1,19 @@
 {
-  "registry": "Adam-S-Daniel/agentskills",
-  "ref": "34d71aeea7e368df41d57414d6ddb5cc76934d92",
+  "registry": "Adam-S-Daniel/adam-agentskills",
+  "ref": "def7d1d13ff8ca8ff228a49f952ae6cf586fe1e2",
   "bundles": [
-    "adam"
+    "adam-anything-anywhere",
+    "adam-coding-anywhere"
   ],
   "skills": {
-    "adam/adam-writing-style": "sha256:a6f71e6d91694783225d4a7bb9e89be2264f46a7d28cde4c22d48cdd5acb8fa5",
-    "adam/debug-github-workflows": "sha256:a695b854250e5c6b8255558354108a406ba2197c500d27173cb7a83b9beb1ffd",
-    "adam/disarm-inherited-reach": "sha256:3e355e35d7012c34d475711e8b438bfc5075deb92982b7561e1f9bb40054b893",
-    "adam/finding-unknowns": "sha256:a67b7663b5b44d07cfddeb923ce19f3cf79447e052658a69cf7fcb985fc0130d",
-    "adam/github-actions-repo-settings": "sha256:6c940f5721c3a16351fe818b6761751d5c76f582893815c9394721f2ded1feb2",
-    "adam/review-bash-ci-reliability": "sha256:1e1c2993689cfe79b6f1345de09101ff7d3b4b902a34ae5b458ee86e3f28f8b9",
-    "adam/skills-doctor": "sha256:543794e5e79c706fe26d38adc7dfbecd4c09e59d6c87432008acd2a957089fc7",
-    "adam/workflow-path-audit": "sha256:8a7c57bcd890bbab38c42473d8705f0b2521954385f03bf5289e3ec84d3fcdde",
-    "adam/writing-adrs": "sha256:4e9a4b9472bd3d92501bf0d7f882544ba66e8b03aa48bac7fa1689c45d903820"
+    "adam-anything-anywhere/finding-unknowns": "sha256:a67b7663b5b44d07cfddeb923ce19f3cf79447e052658a69cf7fcb985fc0130d",
+    "adam-anything-anywhere/writing-adrs": "sha256:4e9a4b9472bd3d92501bf0d7f882544ba66e8b03aa48bac7fa1689c45d903820",
+    "adam-coding-anywhere/debug-github-workflows": "sha256:a695b854250e5c6b8255558354108a406ba2197c500d27173cb7a83b9beb1ffd",
+    "adam-coding-anywhere/disarm-inherited-reach": "sha256:3e355e35d7012c34d475711e8b438bfc5075deb92982b7561e1f9bb40054b893",
+    "adam-coding-anywhere/github-actions-repo-settings": "sha256:31f3ec7dc4ed2132c4fd6651cc534f66c744c24e760616488fece8ad54c74aeb",
+    "adam-coding-anywhere/review-bash-ci-reliability": "sha256:1e1c2993689cfe79b6f1345de09101ff7d3b4b902a34ae5b458ee86e3f28f8b9",
+    "adam-coding-anywhere/skills-doctor": "sha256:7fa7c50564048eec41d8acdcc8a9017beae54625008eff369e026fbf4ce6ba6d",
+    "adam-coding-anywhere/workflow-path-audit": "sha256:8a7c57bcd890bbab38c42473d8705f0b2521954385f03bf5289e3ec84d3fcdde"
   },
-  "generated_from": "34d71aeea7e368df41d57414d6ddb5cc76934d92"
+  "generated_from": "def7d1d13ff8ca8ff228a49f952ae6cf586fe1e2"
 }
