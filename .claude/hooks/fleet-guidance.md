@@ -132,18 +132,18 @@ adds ~200 domains.
 
 ## Automation vs branch protection
 
-Fleet repos are PR-only on the default branch via ruleset, managed as code in
+Fleet repos are PR-only on the default branch via ruleset, managed in
 `repo-settings` (ADR 0001).
 
 - Never design a bot that pushes to a protected default branch — rejected
-  (GH013), even from the repo's own workflows.
-- Generated data goes on a dedicated unprotected results branch
-  (skills-evals' `eval-results`), treated as untrusted.
+  (GH013), even from its own workflows.
+- Generated data goes on an unprotected results branch (skills-evals'
+  `eval-results`), treated as untrusted.
 - A bot that must write to a default branch needs a ruleset bypass actor
-  declared in repo-settings' `fleet.yml`, never a hand-granted UI bypass; the
-  AGENTS.md sync App is the example.
-- PR + auto-merge is not a sanctioned bot-write path for fleet repos; the
-  cms-platform-managed repos use it by design.
+  declared in repo-settings' `fleet.yml` (e.g. the AGENTS.md sync App), never
+  a hand-granted UI bypass.
+- PR + auto-merge is not a sanctioned bot-write path, bar skills-evals' roster
+  PR (repo-settings ADR 0003); cms-platform-managed repos use it by design.
 - **A required status check gets no `concurrency` group** when its job can
   fire twice on one head sha (label events, `opened` + `synchronize`): a
   cancelled run can win the context and block the merge for good
