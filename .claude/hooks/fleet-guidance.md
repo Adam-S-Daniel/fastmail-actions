@@ -6,18 +6,19 @@
 
 Only what is **specific to this account and learned the hard way**; depth
 lives in each repo's `docs/` and the skills registry. The fleet-memory hook
-delivers this once per session to `~/.claude/CLAUDE.md` (Claude Code) and
-`~/.codex/AGENTS.md` (Codex). Keep it under 24 KiB: Codex truncates project
-instructions silently at 32 KiB (`project_doc_max_bytes`), and full mode
-inlines this file with sections and a repo's additions.
+delivers this once per session to `~/.claude/CLAUDE.md` and
+`~/.codex/AGENTS.md`. Keep it under 24 KiB; Codex silently cuts a full-mode
+AGENTS.md at 32 KiB.
 
 ## Working in these repos
 
 - Fix what was asked: no speculative features, premature abstractions or
   unused helpers. Prefer editing an existing file over creating one.
 - Every public interface change updates its tests. Run the existing suite
-  before calling a task complete and say what you ran. New behaviour gets a
+  before calling a task complete and say what you ran. New behavior gets a
   test; a bug fix gets a regression test.
+- **American English spelling** in all text you add or change, comments and
+  commits included: behavior, color, -ize.
 - Tests are deterministic — no sleeps, no network, no wall-clock time.
 - **A lint or check that reasons about code SHAPE** (which functions or
   `test()` blocks exist, what sits inside what, a call's arguments) **parses
@@ -288,7 +289,7 @@ high-entropy value:
 access  auth  api  credential  creds  key  passwd  password  secret  token
 ```
 
-Any generated file serialising such a `name: value` beside a hash looks like
+Any generated file serializing such a `name: value` beside a hash looks like
 a leak: **`cms-platform-secrets`** in `skills.lock` turned both consumer sites
 red on every push (adamdaniel.ai: eight blocked publishes) while the author's
 repo stayed green — the PR lane scans `base..head`, the push lane full
@@ -401,7 +402,7 @@ reusable-workflow ref is for review to catch.
 
 ## Two setup gaps you may close, and must not nag about
 
-Two setup gaps no repo can commit, both silent when missing. **Detect first,
+No repo can commit either; both are silent when missing. **Detect first,
 and say nothing when the check passes.** Once per session, not as a
 greeting, not only for skills work.
 
