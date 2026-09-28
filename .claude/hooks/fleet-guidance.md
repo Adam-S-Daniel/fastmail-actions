@@ -276,8 +276,8 @@ bypass it); unset still waits 3 days; leave
 `semver-minor-days` / `-patch-days` undefined.
 **By hand**, nothing watches it: take the newest release past 7 days
 (`npm view <pkg> time --json`), pinned exact. **Harness CLIs are unpinned**
-(Claude Code, Codex; not `uses:` or SDKs): the installed one, else
-latest; record its version and the models used.
+(Claude Code, Codex; not `uses:` or SDKs): a run installs npm `latest`;
+record its version and the models used.
 
 ## A name you choose becomes data a scanner reads
 
