@@ -384,8 +384,8 @@ reusable-workflow ref is for review to catch.
   `adam-anything-anywhere`, `adam-coding-anywhere` (cloud-safe, default-on),
   `adam-coding-local`, `adam-non-coding-local` (machine-bound); invoke
   `/<plugin>:<skill>`; `setup.sh` sets up a machine.
-- **A `git push` failing in EVERY repo** means `setup.sh`'s GLOBAL
-  sync-skills pre-push hook is stale: re-run `bash setup.sh` in the registry.
+- **A `git push` failing in EVERY repo** on a missing `sync-skills` hook
+  script: re-run `bash setup.sh --owner-machine` in the registry (removes it).
 - Cloud/ephemeral sessions get **no** plugins from repo-declared settings
   (registry ADR 0001): the repo's `skills.lock` and `skills-bootstrap`
   SessionStart hook install the bundles, digest-verified; read the
@@ -394,7 +394,7 @@ reusable-workflow ref is for review to catch.
   `repos.yml` AND a `skills.lock` the repo committed itself (the sync never
   writes one). Bundles cost always-on context, so a repo may be deliberately
   out — check for `skills.lock`, don't guess.
-- **Terminals (CLI 2.1.273+) load the claude.ai account store too**, as
+- **Terminals (CLI 2.1.273+) load Anthropic's account skills**, as
   `anthropic-skills:<name>`; `setup.sh` opts a machine out
   (`syncClaudeAiSkills: false`), cloud sessions can't (registry ADR 0010).
 - New reusable skills graduate **into** the registry (sensitive ones in
