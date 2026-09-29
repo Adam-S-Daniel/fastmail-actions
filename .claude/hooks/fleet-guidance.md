@@ -62,7 +62,7 @@ new domain or subjective criteria.
 
 ## Workstation layout
 
-Repo locations are host-specific (on Windows, check `$env:COMPUTERNAME`).
+Repo locations are host-specific; on Windows check `$env:COMPUTERNAME`.
 
 - **The owner's Windows laptop**: clones live under
   `D:\repos\<github-owner-or-org>\<repo>` (e.g.
