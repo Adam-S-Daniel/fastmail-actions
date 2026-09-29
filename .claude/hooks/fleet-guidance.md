@@ -69,19 +69,6 @@ new domain or subjective criteria.
   - **WSL**: clones live under
     `~/repos/<repo>` (e.g. `~/repos/_agent_guidance`)
 
-## Sessions get cut off
-
-**The owner's laptop drops sessions mid-task, often** — any run can end
-between tool calls.
-
-- **Commit and push as you go**, on a branch; a conversation, a dirty tree and
-  a worktree do not survive the laptop.
-- **Persist the expensive part** (root cause, baseline test result, the option
-  ruled out) in a commit message, PR body or ADR.
-- **Say where things stand before a long step** (full suite, CI watch, wide
-  refactor).
-- **Report a resume pointer:** branch, PR number, worktree path, next command.
-
 ## Security
 
 - Validate anything crossing a trust boundary — user input, API responses,
