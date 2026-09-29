@@ -256,7 +256,8 @@ CLOSED without `gitleaks` on `PATH`, which a fresh container lacks
 
 ## Dependency updates
 
-Dependabot `cooldown`: `default-days: 7`; `semver-major-days: 30` where
+Dependabot `cooldown`: `default-days: 7` (cms-platform `exclude`d, #424);
+`semver-major-days: 30` where
 supported (not `github-actions`, #133). Version updates only (advisories
 bypass it); unset still waits 3 days; leave
 `semver-minor-days` / `-patch-days` undefined.
@@ -304,7 +305,7 @@ uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
   lies (2026-08-20: Dependabot left stale comments beside moved SHAs in
   GHA-bench#52 and skills-evals #38/#39/#40). Resolve a version with
   `git ls-remote <url> | grep <sha>` or the Dependabot PR title.
-- **Wait 7 days after a release before adopting it**; else pin the previous.
+- **Wait 7 days after a third-party release**; else pin the previous.
 - **Dereference annotated tags.** `gh api .../git/ref/tags/<tag>` with
   `.object.type == "tag"` gives the tag object's SHA, which fails at runtime;
   use `git ls-remote <url> 'refs/tags/<tag>^{}'`.
