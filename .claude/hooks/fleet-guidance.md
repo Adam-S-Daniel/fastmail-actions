@@ -62,14 +62,12 @@ new domain or subjective criteria.
 
 ## Workstation layout
 
-Repo locations are host-specific; on Windows check `$env:COMPUTERNAME`.
-
-- **The owner's Windows laptop**: clones live under
-  `D:\repos\<github-owner-or-org>\<repo>` (e.g.
-  `D:\repos\adam-s-daniel\wsl-automation`), never `C:\Users\<user>\...`.
-- **Any Windows host with WSL**: PowerShell run from WSL inherits the launching
-  session's elevation, and an agent's is not elevated — see the
-  `windows-elevation-from-wsl` skill.
+- Clones live under:
+  - **Windows**: 
+    `D:\repos\<github-owner-or-org>\<repo>` (e.g.
+    `D:\repos\adam-s-daniel\_agent_guidance`), never `C:\Users\<user>\...`.
+  - **WSL**: clones live under
+    `~/repos/<repo>` (e.g. `~/repos/_agent_guidance`)
 
 ## Sessions get cut off
 
@@ -384,8 +382,8 @@ reusable-workflow ref is for review to catch.
   `adam-anything-anywhere`, `adam-coding-anywhere` (cloud-safe, default-on),
   `adam-coding-local`, `adam-non-coding-local` (machine-bound); invoke
   `/<plugin>:<skill>`; `setup.sh` sets up a machine.
-- **A `git push` failing in EVERY repo** on a missing `sync-skills` hook
-  script: re-run `bash setup.sh --owner-machine` in the registry (removes it).
+- **A `git push` failing in EVERY repo**: retired sync-skills hook targets a
+  deleted script; `setup.sh --owner-machine` removes it.
 - Cloud/ephemeral sessions get **no** plugins from repo-declared settings
   (registry ADR 0001): the repo's `skills.lock` and `skills-bootstrap`
   SessionStart hook install the bundles, digest-verified; read the
