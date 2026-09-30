@@ -118,7 +118,8 @@ SELF_ROOT="$(cd -- "$HOOK_DIR/../.." >/dev/null 2>&1 && pwd -P)" || SELF_ROOT="$
 # otherwise reads as "so nothing is installed".
 LEFT_IN_PLACE="; any previously-installed skills in ~/.claude/skills were LEFT IN PLACE (this run never read a lock, so it cannot say which of them are stale)"
 
-# emit <verdict> — print the SessionStart payload and exit 0.
+# emit <verdict> [success] — print the SessionStart payload and exit. Claude remains
+# fail-soft; explicit Codex Cloud setup must stop on a degraded delivery.
 #
 # The verdict always leads with the literal token `skills:` so it is greppable
 # from a transcript, and it is the whole "readily knowable" contract: whoever
@@ -127,6 +128,10 @@ LEFT_IN_PLACE="; any previously-installed skills in ~/.claude/skills were LEFT I
 # python encoder is attempted, and anything at all going wrong there falls
 # through to the printf branch rather than leaving stdout empty.
 emit () {
+  local status=0
+  if [ "${MODE_CODEX_CLOUD:-0}" -eq 1 ] && [ "${2:-}" != success ]; then
+    status=1
+  fi
   # json.dumps, not string concatenation: the verdict can carry names read out
   # of the lock file, and hand-built JSON is how a stray quote turns a fail-soft
   # notice into malformed hook output.
@@ -247,7 +252,7 @@ payload = json.dumps({
 }, ensure_ascii=True)
 sys.stdout.buffer.write(payload.encode("ascii") + b"\n")
 sys.stdout.buffer.flush()'; then
-    exit 0
+    exit "$status"
   fi
   # Fallback: no python3, or the encoder failed. A verdict must still be
   # printed, and it is no longer guaranteed to be a fixed literal, so escape
@@ -310,8 +315,17 @@ sys.stdout.buffer.flush()'; then
   # already been applied to it, so `systemMessage` inherits them all rather
   # than needing its own pass.
   printf '{"systemMessage":"%s","reloadSkills":true,"hookSpecificOutput":{"hookEventName":"SessionStart","reloadSkills":true,"additionalContext":"%s"}}\n' "$safe" "$safe"
-  exit 0
+  exit "$status"
 }
+
+MODE_CODEX_CLOUD=0
+if [ "$#" -gt 0 ]; then
+  MODE_CODEX_CLOUD=1
+  if [ "$#" -ne 1 ] || [ "$1" != "--codex-cloud" ]; then
+    emit "skills: DEGRADED — unsupported argument (usage: skills-bootstrap.sh [--codex-cloud])"
+  fi
+  LEFT_IN_PLACE="; any previously-installed skills in ~/.agents/skills were LEFT IN PLACE (this run never read a lock, so it cannot say which of them are stale)"
+fi
 
 # join_names <name>... — ", "-joined list for the verdict.
 # MAX_FRAGMENT — the longest a single repo-derived fragment may be in a verdict.
@@ -505,10 +519,25 @@ entrypoint_reads_remote () {
   esac
   return 1
 }
-if [ -z "${CLAUDE_CODE_REMOTE_SESSION_ID:-}" ] \
+if [ "$MODE_CODEX_CLOUD" -eq 0 ] \
+   && [ -z "${CLAUDE_CODE_REMOTE_SESSION_ID:-}" ] \
    && ! entrypoint_reads_remote "${CLAUDE_CODE_ENTRYPOINT:-}" \
    && [ -z "${SKILLS_BOOTSTRAP_FORCE:-}" ]; then
   emit "skills: skipped — durable session (entrypoint=${CLAUDE_CODE_ENTRYPOINT:-unset}, no remote session id), marketplace install is authoritative"
+fi
+
+# Codex Cloud runs during environment setup, before agent context exists. Its
+# explicit mode needs no Claude surface marker and reads only this project's
+# own lock. An absent lock is an intentional opt-out, even when the hook's repo
+# or a child of the project directory carries one.
+if [ "$MODE_CODEX_CLOUD" -eq 1 ]; then
+  CLAUDE_PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
+  if [ ! -d "$CLAUDE_PROJECT_DIR" ] || [ ! -r "$CLAUDE_PROJECT_DIR" ] || [ ! -x "$CLAUDE_PROJECT_DIR" ]; then
+    emit "skills: DEGRADED — project directory $CLAUDE_PROJECT_DIR cannot be read or searched"
+  fi
+  if [ ! -e "$CLAUDE_PROJECT_DIR/skills.lock" ] && [ ! -L "$CLAUDE_PROJECT_DIR/skills.lock" ]; then
+    emit "skills: skipped — no skills.lock in $CLAUDE_PROJECT_DIR (project opted out of Codex Cloud skill delivery)" success
+  fi
 fi
 
 # --- locate the lock(s) ----------------------------------------------------
@@ -731,7 +760,7 @@ if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
     # immediate child is a git repository carrying a lock in any shape. It reads
     # no lock, names no child, and changes nothing about what gets installed —
     # its single effect is to suppress the prune and say so.
-    if [ -r "$CLAUDE_PROJECT_DIR" ] && [ -x "$CLAUDE_PROJECT_DIR" ]; then
+    if [ "$MODE_CODEX_CLOUD" -eq 0 ] && [ -r "$CLAUDE_PROJECT_DIR" ] && [ -x "$CLAUDE_PROJECT_DIR" ]; then
       dotglob_was_on=0
       shopt -q dotglob && dotglob_was_on=1
       shopt -s dotglob
@@ -1070,13 +1099,22 @@ if ! command -v python3 >/dev/null 2>&1; then
   emit "skills: DEGRADED — python3 not found on PATH (needed to read the lock and verify digests; install python3)$LEFT_IN_PLACE"
 fi
 if [ -z "${HOME:-}" ]; then
+  if [ "$MODE_CODEX_CLOUD" -eq 1 ]; then
+    emit "skills: DEGRADED — HOME is unset (needed to locate ~/.agents/skills; export HOME)$LEFT_IN_PLACE"
+  fi
   emit "skills: DEGRADED — HOME is unset (needed to locate ~/.claude/skills; export HOME)$LEFT_IN_PLACE"
 fi
 
 # Known this early because every failure path from here on has to be able to
 # REMOVE from it. Deliberately not created yet: a lock rejected at the trust
 # boundary must leave no trace at all, not an empty ~/.claude/skills.
-DEST="$HOME/.claude/skills"
+if [ "$MODE_CODEX_CLOUD" -eq 1 ]; then
+  DEST="$HOME/.agents/skills"
+  PROJECT_SKILLS_DIR=".agents/skills"
+else
+  DEST="$HOME/.claude/skills"
+  PROJECT_SKILLS_DIR=".claude/skills"
+fi
 
 tmp="$(mktemp -d)" || emit "skills: DEGRADED — could not create a temp directory (check ${TMPDIR:-/tmp})$LEFT_IN_PLACE"
 trap 'rm -rf "$tmp"' EXIT
@@ -2832,11 +2870,11 @@ while IFS= read -r -d '' key \
   # single repo and a bare name would leave the reader unable to find the file
   # they have to move.
   owner=""
-  if [ -f "$PROJECT_DIR/.claude/skills/$name/SKILL.md" ]; then
+  if [ -f "$PROJECT_DIR/$PROJECT_SKILLS_DIR/$name/SKILL.md" ]; then
     owner="$PROJECT_DIR"
   elif [ "${#REPO_OWNED_DIRS[@]}" -gt 0 ]; then
     for repo_dir in "${REPO_OWNED_DIRS[@]}"; do
-      if [ -f "$repo_dir/.claude/skills/$name/SKILL.md" ]; then owner="$repo_dir"; break; fi
+      if [ -f "$repo_dir/$PROJECT_SKILLS_DIR/$name/SKILL.md" ]; then owner="$repo_dir"; break; fi
     done
   fi
   if [ -n "$owner" ]; then
@@ -3352,6 +3390,6 @@ fi
 echo "installed=$ok/$total sources=$(join_names "${FROM[@]}") locks=${#ACCEPTED[@]} dest=$DEST" >>"$LOG"
 
 if [ "${#problems[@]}" -eq 0 ]; then
-  emit "skills: $ok/$total from $(join_names "${FROM[@]}")$ACROSS — OK$suffix"
+  emit "skills: $ok/$total from $(join_names "${FROM[@]}")$ACROSS — OK$suffix" success
 fi
 emit "skills: $ok/$total from $(join_names "${FROM[@]}")$ACROSS — DEGRADED: $(join_names "${problems[@]}")$suffix"
