@@ -8,7 +8,7 @@ Only what is **specific to this account and learned the hard way**; depth
 lives in each repo's `docs/` and the skills registry. The fleet-memory hook
 delivers this once per session to BOTH `~/.claude/CLAUDE.md` and
 `~/.codex/AGENTS.md`, so a rule for every agent goes here, not in a
-one-tool file like `~/.claude/AGENTS.md`. Keep it under 24 KiB; Codex silently cuts a full-mode
+one-tool file like `~/.claude/AGENTS.md`. Keep it under 25 KiB; Codex silently cuts a full-mode
 AGENTS.md at 32 KiB.
 
 ## Working in these repos
@@ -330,13 +330,14 @@ reusable-workflow ref is for review to catch.
 
 ## Subagent delegation (model routing)
 
-- Don't write code in the main loop: implement in a subagent on a lower-power
-  model — haiku-class for exactly-specified edits, sonnet-class for
-  implementation from a clear spec; escalate rather than ship a wrong diff on
-  anything subtle. The main loop keeps root cause, architecture, the spec and
-  diff review. Explore/Plan agents and SDK harnesses with
-  `settingSources: []` never see this file — restate load-bearing constraints
-  in the prompt.
+- Don't write code in the orchestrating session: delegate to a subagent or
+  child session on a cheaper model — the cheapest capable tier for
+  exactly-specified edits, a mid tier for a clear spec; escalate rather than
+  ship a wrong diff on anything subtle. The orchestrator keeps root cause,
+  architecture, the spec (files, exact changes, house style, test command) and
+  diff review; output faces the same test/CI proof. A child that skips this
+  file (e.g. Claude Code Explore/Plan agents, SDK harnesses with
+  `settingSources: []`) needs constraints in its prompt.
 - Delegated work is done when a **verifier exits 0**: name the exact
   command, run LAST (after a trailing `echo $?` the tool's exit code is the
   echo's), and require its code back. "Cannot run it" is BLOCKED; a count
@@ -445,3 +446,8 @@ refresh does not move a federated bundle. Neither check belongs in a repo's `AGE
   task's commits.** A reusable worktree (`.claude/worktrees/<name>/`) carries
   stale WIP, once a commit that *deleted* files the task edits. Anything
   extra: `git checkout -b <new> origin/<base>` and redo the work there.
+- **One worktree per independent coding session**, pre-authorized: reuse it
+  on resume, not per turn; edit, build, test there, leaving the original
+  checkout and others' worktrees untouched. If creation fails, resolve or
+  explain before using the shared checkout. No git: a separate copy. Read-only
+  tasks and requested global-settings changes use targets directly.
