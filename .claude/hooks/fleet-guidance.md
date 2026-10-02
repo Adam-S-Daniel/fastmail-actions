@@ -125,6 +125,10 @@ Fleet repos are PR-only on the default branch via ruleset, managed in
   (GH013), even from its own workflows.
 - Generated data goes on an unprotected results branch (skills-evals'
   `eval-results`), treated as untrusted.
+- **A branch that outlives its PRs is `persistent/<purpose>`** (results,
+  routine accumulation), guarded by a per-repo deletion-only
+  `extra_rulesets` entry on `persistent/**` in `fleet.yml` (repo-settings
+  ADR 0007). Never delete one; stale-branch cleanups skip the prefix.
 - A bot that must write to a default branch needs a ruleset bypass actor
   declared in repo-settings' `fleet.yml` (e.g. the AGENTS.md sync App), never
   a hand-granted UI bypass.
