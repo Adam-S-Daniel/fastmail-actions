@@ -6,9 +6,9 @@
 
 Only what is **specific to this account and learned the hard way**; depth
 lives in each repo's `docs/` and the skills registry. The fleet-memory hook
-delivers this once per session to `~/.claude/CLAUDE.md` and
-`~/.codex/AGENTS.md`; user-level rules go here, not in Claude-only
-`~/.claude/AGENTS.md`. Keep it under 24 KiB; Codex silently cuts a full-mode
+delivers this once per session to BOTH `~/.claude/CLAUDE.md` and
+`~/.codex/AGENTS.md`, so a rule for every agent goes here, not in a
+one-tool file like `~/.claude/AGENTS.md`. Keep it under 24 KiB; Codex silently cuts a full-mode
 AGENTS.md at 32 KiB.
 
 ## Working in these repos
