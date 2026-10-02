@@ -124,7 +124,7 @@ Fleet repos are PR-only on the default branch via ruleset, managed in
 - Never design a bot that pushes to a protected default branch — rejected
   (GH013), even from its own workflows.
 - Generated data goes on an unprotected results branch (skills-evals'
-  `eval-results`), treated as untrusted.
+  `persistent/eval-results`), treated as untrusted.
 - **A branch that outlives its PRs is `persistent/<purpose>`** (results,
   routine accumulation), guarded by a per-repo deletion-only
   `extra_rulesets` entry on `persistent/**` in `fleet.yml` (repo-settings
