@@ -310,6 +310,7 @@ receipt_flush() {
 import _signal as signal
 try:
     signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
     signal.alarm(5)
 except (AttributeError, OSError, ValueError):
     # Platforms without a usable POSIX alarm skip optional observation.
@@ -324,6 +325,8 @@ try:
     fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
+        # A foreign-owned helper cannot supply trusted receipt logic. Refuse
+        # silently: every writer stream is closed to preserve the hook verdict.
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_size > 4194304:
             raise OSError("unsafe receipt helper")
         remaining, pieces = info.st_size, []
