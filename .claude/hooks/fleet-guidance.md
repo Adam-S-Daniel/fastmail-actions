@@ -204,8 +204,8 @@ had no `skills.lock`).
   `cron_coverage.fleet`) **to a search index**; a zero result is weak
   evidence. **To ask whether repo X has file Y, ask the repo**
   (`git ls-remote`, the contents API).
-- **Your session's reach is not the fleet's shape** — hosted sessions refuse
-  cross-owner attachment; "I cannot see it" and "it does not exist" differ.
+- **Your session's reach is not the fleet's shape** — it is per-session and
+  may miss an owner; "I cannot see it" and "it does not exist" differ.
 - **The DENOMINATOR is the part that lies.** Enumerating local checkouts
   errs both ways (2026-08-29: three DELETED repos counted, a live consumer
   missed — `ALL PROPAGATED` over 17 of 18, false GREEN; issue #37). Take it
@@ -336,7 +336,7 @@ reusable-workflow ref is for review to catch.
   ship a wrong diff on anything subtle. The orchestrator keeps root cause,
   architecture, the spec (files, exact changes, house style, test command) and
   diff review; output faces the same test/CI proof. A child that skips this
-  file (e.g. Claude Code Explore/Plan agents, SDK harnesses with
+  file (e.g. Explore/Plan or `omitClaudeMd` agents, SDK harnesses with
   `settingSources: []`) needs constraints in its prompt.
 - Delegated work is done when a **verifier exits 0**: name the exact
   command, run LAST (after a trailing `echo $?` the tool's exit code is the
@@ -385,8 +385,8 @@ reusable-workflow ref is for review to catch.
   `repos.yml` AND a `skills.lock` the repo committed itself (the sync never
   writes one). Bundles cost always-on context, so a repo may be deliberately
   out — check for `skills.lock`, don't guess.
-- **Terminals (CLI 2.1.273+) load Anthropic's account skills** as
-  `anthropic-skills:<name>`; `setup.sh` opts a machine out
+- **Terminals load the claude.ai account's skills** as `/<name>` (or
+  `/anthropic-skills:<name>` if taken); `setup.sh` opts a machine out
   (`syncClaudeAiSkills: false`), cloud can't (registry ADR 0010).
 - New reusable skills graduate **into** the registry (sensitive ones in
   `adam-agentskills-private`); a long skill splits across files.
@@ -417,12 +417,12 @@ Then say it once, naming the snippet's home (adam-agentskills'
 marketplace add Adam-S-Daniel/adam-agentskills` and install the plugins wanted;
 **marketplace behind** → `claude plugin marketplace update adam-agentskills`;
 **install behind** → below; **both current** → silence.
-The clone (`~/.claude/plugins/marketplaces/<name>/` — find it, never assume it) auto-updates while the installed bundle (`~/.claude/plugins/cache/<marketplace>/<bundle>/
-<version>/`) never moves, so check the INSTALL (the owner's laptop,
-2026-08-31: **381 commits** behind):
-`~/.claude/plugins/installed_plugins.json` carries a `gitCommitSha` per
-entry; `git -C <clone> merge-base --is-ancestor <that sha> HEAD` succeeding
-means behind; `git -C <clone> rev-list --count <sha>..HEAD` says by how far.
+The clone (that list's `installLocation`; never assume it) auto-updates while
+the installed bundle (`installPath`) never moves, so check the INSTALL (the
+owner's laptop, 2026-08-31: **381 commits** behind): after the refresh,
+compare each `gitCommitSha` in `~/.claude/plugins/installed_plugins.json`
+with `git -C <clone> rev-parse HEAD` — equal is current, another sha behind,
+none unknown. The clone is `--depth 1`, so `merge-base`/`rev-list` exit 128.
 **`claude plugin update` may not fix it, yet says it did** (it gates on
 the `version` string alone; registry ADR 0009) — uninstall and reinstall
 instead. An update changes what loads **next** session; a marketplace
