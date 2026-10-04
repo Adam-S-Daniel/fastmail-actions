@@ -13,6 +13,11 @@ AGENTS.md at 32 KiB.
 
 ## Working in these repos
 
+- **An issue or PR labeled `on-hold` is paused by the owner.** Do not work on
+  it (no commits, reviews, merges, closing or follow-ups that do it); read,
+  cite and list it as on hold without asking again. A held PR stays open.
+  Only the owner adds or removes the label, or an agent the owner directs in
+  that session.
 - Fix what was asked: no speculative features, premature abstractions or
   unused helpers. Prefer editing an existing file over creating one.
 - A public interface change updates its tests; new behavior gets a test, a
