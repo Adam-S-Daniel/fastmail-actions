@@ -122,6 +122,9 @@ RECEIPT_LIMIT = 1048576
 def receipt_source(path, begin, end, directory_fd=None):
     # Read only a validated delivered file; hash its unique managed block.
     options = {} if directory_fd is None else {"dir_fd": directory_fd}
+    info = os.stat(path, follow_symlinks=False, **options)
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError("unsafe receipt source")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, **options)
     try:
         info = os.fstat(fd)
@@ -217,6 +220,14 @@ def receipt_write(directory, mode, deliveries):
                   "load_reason": "delivery", "mode": mode, "deliveries": deliveries}
         line = (json.dumps(record, separators=(",", ":")) + "\n").encode()
         parent = descriptors[-1]
+        try:
+            target = receipt_platform(os.stat, "fleet-delivery.jsonl", dir_fd=parent,
+                                      follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(target.st_mode):
+                raise OSError("unsafe receipt")
         fd = receipt_platform(os.open, "fleet-delivery.jsonl", os.O_WRONLY | os.O_APPEND |
                      os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=parent)
         descriptors.append(fd)
@@ -293,9 +304,23 @@ receipt_flush() {
     [ "$RECEIPT_MODE" != codex-cloud ] || receipt_directory="$CODEX_DEST_DIR"
     # Bash 3.2 and Git Bash support this detached launch. Every stream is closed
     # so the writer cannot retain caller output pipes or read hook events.
-    (python3 -c '
+    # -S defers sitecustomize until after the alarm is armed. Restoring normal
+    # site startup keeps the interpreter environment unchanged for observation.
+    (python3 -S -c '
+import _signal as signal
+try:
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.alarm(5)
+except (AttributeError, OSError, ValueError):
+    # Platforms without a usable POSIX alarm skip optional observation.
+    raise SystemExit(0)
+import site
+site.main()
 import os, stat, sys
 try:
+    info = os.stat(sys.argv[1], follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError("unsafe receipt helper")
     fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
