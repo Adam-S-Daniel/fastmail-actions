@@ -5,11 +5,10 @@
 > Everything above it will be overwritten on the next sync.
 
 Only what is **specific to this account and learned the hard way**; depth
-lives in each repo's `docs/` and the skills registry. The fleet-memory hook
-delivers this once per session to BOTH `~/.claude/CLAUDE.md` and
-`~/.codex/AGENTS.md`, so a rule for every agent goes here, not in a
-one-tool file like `~/.claude/AGENTS.md`. Keep it under 25 KiB; Codex silently cuts a full-mode
-AGENTS.md at 32 KiB.
+lives in each repo's `docs/` and the skills registry. Delivered once per
+session to BOTH `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, so a rule for
+every agent goes here, not in `~/.claude/AGENTS.md` (one tool only). Keep it
+under 25 KiB; Codex silently cuts a full-mode AGENTS.md at 32 KiB.
 
 ## Working in these repos
 
@@ -28,12 +27,10 @@ AGENTS.md at 32 KiB.
 - Tests are deterministic: no sleeps, network or wall-clock time.
 - **A lint or check that reasons about code SHAPE** (which functions or
   `test()` blocks exist, what sits inside what, a call's arguments) **parses
-  a real AST, never a regex or line scan** — regex cannot see a variable in
-  `` page.goto(`…#/collections/${col}`) ``, the jodidaniel host-loop gap in
-  `cms-platform`. Use `acorn`/`acorn-walk` for JS, the
-  `yaml` for YAML; regex only for a lexical token.
-- Writing that goes out under Adam's name (email, bio, proposal): invoke
-  the `adam-writing-style` skill.
+  a real AST, never a regex or line scan** — regex cannot see a template-literal
+  variable. Use `acorn`/`acorn-walk` for JS, `yaml` for YAML; regex only for a lexical token.
+- Writing that goes out under Adam's name: invoke the
+  `adam-writing-style` skill.
 
 ## Anything you name gets its link
 
@@ -56,9 +53,9 @@ changelog" — no links).
 ## Finding your unknowns
 
 Ambiguities surface *during* implementation. Before: name what you don't
-know, preferring a **code** reference to prose. During: surface departures
+know, preferring a code reference to prose. During: surface departures
 and edge cases. After: explain what changed and why it is correct. Durable
-findings go in the **repo**, not agent memory: a fleet rule in
+findings go in the repo, not agent memory: a fleet rule in
 `_agent-guidance`'s `agents-md/base.md`, a repo fact below
 `## Repo-specific additions`, a procedure in the skills registry. A note in
 `~/.claude/projects/*/memory/` is a POINTER: `metadata.home` names that copy as
@@ -69,9 +66,9 @@ a new domain or subjective criteria.
 
 ## Workstation layout
 
-- Clones live under **Windows**
+- Clones live under Windows
   `D:\repos\<github-owner-or-org>\<repo>` (never `C:\Users\<user>\...`),
-  **WSL** `~/repos/<repo>`.
+  WSL `~/repos/<repo>`.
 
 ## Security
 
@@ -84,8 +81,8 @@ a new domain or subjective criteria.
 
 ## Data exposure in CI and public repos
 
-CI logs, summaries, artifacts, run pages and git history are **public** on a
-public repo (a workflow once logged email addresses).
+CI logs, summaries, artifacts, run pages and git history are public on a
+public repo.
 
 - **Never print personal or sensitive data to a log** — emails, contacts,
   names, IDs, mailbox counts, tokens. Deliver results out-of-band (email the
@@ -100,24 +97,23 @@ public repo (a workflow once logged email addresses).
   require approval for outside-collaborator fork PRs.
 - **Fixtures use `example.com` / `example.net` only.**
 - **Sanitize before the first commit.** Committed sensitive data means
-  rewriting history, deleting every ref to it (branches, tags, **PRs**) and
-  force-pushing — the one sanctioned force-push (objects stay fetchable by
-  SHA until GC).
+  rewriting history, deleting every ref to it (branches, tags, PRs) and
+  force-pushing — the one sanctioned force-push.
 - **Commit with the `…@users.noreply.github.com` identity** on public repos.
 
 ## Network allowlists live in `_agent-guidance/docs/reference/`
 
-Two egress allowlists as **reference copies**, each with a `.CHANGELOG.md`
-sidecar; nothing loads them. Add a changelog entry when you change one.
+Two egress allowlists, reference copies with a `.CHANGELOG.md` sidecar;
+nothing loads them. Add a changelog entry when you change one.
 
-- `network-allowlist-claude-environments.txt` — **in force** for the Claude
+- `network-allowlist-claude-environments.txt` — in force for the Claude
   Code cloud environment `My Whitelist`; the dialog at claude.ai/code is
   authoritative.
-- `network-allowlist-github-runners.txt` — **proposed** for CI; unenforceable
+- `network-allowlist-github-runners.txt` — proposed for CI; unenforceable
   on a standard runner (roadmap #821 closed).
 
 Traps: `*.example.com` does **not** match the apex `example.com`; the "also
-include default list of common package managers" checkbox adds ~200 domains.
+include default list…" checkbox adds ~200 domains.
 
 ## Automation vs branch protection
 
@@ -133,18 +129,17 @@ Fleet repos are PR-only on the default branch via ruleset, managed in
   `extra_rulesets` entry on `persistent/**` in `fleet.yml` (repo-settings
   ADR 0007). Never delete one; stale-branch cleanups skip the prefix.
 - A bot that must write to a default branch needs a ruleset bypass actor
-  declared in repo-settings' `fleet.yml` (e.g. the AGENTS.md sync App), never
+  declared in repo-settings' `fleet.yml`, never
   a hand-granted UI bypass.
 - PR + auto-merge is not a sanctioned bot-write path, bar skills-evals' roster
   PR (repo-settings ADR 0003); cms-platform-managed repos use it by design.
 - **A required status check gets no `concurrency` group** when its job can
   fire twice on one head sha (label events, `opened` + `synchronize`): a
-  cancelled run can win the context and block the merge for good
-  (`405 Required status check "<ctx>" is cancelled`).
+  cancelled run can win the context and block the merge for good.
   `cancel-in-progress: false` does not help (only the latest pending run
   survives), a shared group cancels older siblings, so make triggers pairwise
   disjoint; `push`/`synchronize`-only jobs may keep `cancel-in-progress:
-  true`. Lock it with a test that **parses** the YAML.
+  true`. Lock it with a test that parses the YAML.
 - **Every CI job on pull requests is a required check** unless the repo's
   `AGENTS.md` documents why not. Ship the job and its ruleset change in one
   PR (`PUT` checked-in ruleset JSON; read back what is live).
@@ -161,10 +156,10 @@ Fleet repos are PR-only on the default branch via ruleset, managed in
 hold before writing.
 
 - **`mcp__github__*` — session-provisioned**, not in `ListConnectors`. The
-  **only** one with Actions tools (`actions_*`), job logs (`get_job_logs`),
+  only one with Actions tools (`actions_*`), job logs (`get_job_logs`),
   auto-merge and review-thread resolution. Reach: the attached repos.
 - **`mcp__github-mcp__*` — the claude.ai org connector `github-mcp`**, listed
-  by `ListConnectors`. A **strict subset**: same reads and
+  by `ListConnectors`. A strict subset: same reads and
   PR/issue/merge/push/delete writes; no Actions, job logs, auto-merge or
   review threads. Reach: a GitHub App allowlist INDEPENDENT of the
   attached repos. **Probe for it by connector NAME, never a remembered
@@ -182,15 +177,15 @@ repo, say so, and name the connector in each verification.
 
 ## A GitHub 404 means "not authorized", not "not there"
 
-GitHub answers **404, not 403**, to a caller not allowed to know a private repo
+GitHub answers 404, not 403, to a caller not allowed to know a private repo
 exists, so every 404 is ambiguous: gone, or invisible to that credential.
 
 - **Probe the repo, not the object.** If `GET /repos/<owner>/<repo>/pulls`
   404s too, the repo is invisible (a scope gap); if only the object does, it
   is gone.
 - **Try the other connector first** (2026-08-19: a mid-session MCP reconnect
-  brought up a server blind to a private repo the other had just read;
-  `add_repo` "already attached" is session scope, not the connector's).
+  brought up a server blind to a private repo the other read;
+  `add_repo` "already attached" is session scope).
 - **Git is a separate credential path:** `git ls-remote origin '<ref>'` asks
   "does this branch exist", `git merge-base --is-ancestor <sha> origin/main`
   "was it merged"; neither touches the API.
@@ -201,12 +196,12 @@ exists, so every 404 is ambiguous: gone, or invisible to that credential.
 
 `Adam-S-Daniel` and `jodidaniel`, both in `SYNC_OWNERS` (_agent-guidance's
 `sync.yml` and sibling workflows): enumerate it, never hardcode one. A
-query scoped to one owner returns a **plausible, complete-shaped, wrong**
+query scoped to one owner returns a plausible, complete-shaped, wrong
 result (2026-08-25: a `user:Adam-S-Daniel` search "proved" jodidaniel.com
 had no `skills.lock`).
 
 - **Prefer the fleet's registries** (`repos.yml`, `fleet.yml`,
-  `cron_coverage.fleet`) **to a search index**; a zero result is weak
+  `cron_coverage.fleet`) to a search index; a zero result is weak
   evidence. **To ask whether repo X has file Y, ask the repo**
   (`git ls-remote`, the contents API).
 - **Your session's reach is not the fleet's shape** — it is per-session and
@@ -220,10 +215,10 @@ had no `skills.lock`).
 
 Never read pass/fail off a watch command's exit code: in `cmd | tail` `$?` is
 `tail`'s, a backgrounded watch reports that pipeline code, and `tail -N`
-hides FAILURE lines (e2e and lint FAILURE once read green).
+hides FAILURE lines.
 
 - Capture the real code with `${PIPESTATUS[0]}`, or don't pipe the watch.
-- After **any** CI watch, query the conclusions and report the parsed result:
+- After any CI watch, query the conclusions and report the parsed result:
 
   ```bash
   gh pr view <n> --repo <owner>/<repo> --json statusCheckRollup --jq \
@@ -238,11 +233,11 @@ hides FAILURE lines (e2e and lint FAILURE once read green).
   past the 64 KiB pipe buffer the writer dies 141 and `pipefail` reads a
   present marker as absent (issue #81; 20 trials per size: 48 kB 0/20,
   95 kB 18/20). Feed data as an argument or here-string —
-  `grep -qxF -- "$m" <<<"$s"` or `[[ $'\n'"$s"$'\n' == *$'\n'"$m"$'\n'* ]]`.
+  `grep -qxF -- "$m" <<<"$s"`.
   A size-dependent bug needs trials, not a probe; say how many.
   `$( ... || true )` is safe by accident — say so where you find it.
 - **`gh api ... --jq` on an HTTP error prints the raw error body to stdout**,
-  so `|| true` captures it (it broke `sync.sh`). Discard explicitly:
+  so `|| true` captures it. Discard explicitly:
   `out=$(gh api ... --jq '.foo') || out=""`.
 
 ## A successful `git push` does not mean your commit exists
@@ -280,7 +275,7 @@ record its version and the models used.
 
 ## A name you choose becomes data a scanner reads
 
-gitleaks' `generic-api-key` rule fires on a **keyword** next to a
+gitleaks' `generic-api-key` rule fires on a keyword next to a
 high-entropy value:
 
 ```
@@ -289,9 +284,8 @@ access  auth  api  credential  creds  key  passwd  password  secret  token
 
 Any generated file serializing such a `name: value` beside a hash looks like
 a leak: **`cms-platform-secrets`** in `skills.lock` turned both consumer sites
-red on every push while the author's
-repo stayed green — the PR lane scans `base..head`, the push lane full
-history, and the name outlives the rename until history is rewritten.
+red on every push (PR lane scans `base..head`, push lane full history; the
+name outlives a rename).
 
 - **Check a name against that list** whenever it lands in a generated
   artifact; name the purpose (`consumer-repo-provisioning`), not the
@@ -309,14 +303,10 @@ history, and the name outlives the rename until history is rewritten.
 composite actions and reusable-workflow refs alike; never a tag, branch or
 abbreviated SHA.
 
-```yaml
-uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
-```
-
 - **A pin carries NO trailing version comment.** Nothing maintains it, so it
   lies (2026-08-20: Dependabot left stale comments beside moved SHAs in
-  GHA-bench#52 and skills-evals #38/#39/#40). Resolve a version with
-  `git ls-remote <url> | grep <sha>` or the Dependabot PR title.
+  GHA-bench#52 and skills-evals #38/#39/#40). Resolve one with
+  `git ls-remote <url> | grep <sha>`.
 - **Wait 7 days after a third-party release**, else pin the previous.
 - **Dereference annotated tags.** `gh api .../git/ref/tags/<tag>` with
   `.object.type == "tag"` gives the tag object's SHA, which fails at runtime;
@@ -326,12 +316,31 @@ uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
   `Adam-S-Daniel/cms-platform/.github/workflows/<x>.yml@v0.1.88` and composite
   action `Adam-S-Daniel/cms-platform/.github/actions/<x>@v0.1.88` —
   because `check-platform-pin-consistency.js` asserts each equals
-  `platform.lock`'s `platform_ref`. Nothing third-party is ever a tag.
+  `platform.lock`'s `platform_ref`.
 - `./local/path` and `docker://` refs have nothing to pin.
 
 `sha_pinning_required: true` (`repo-settings`' `fleet.yml`; `cms-platform`'s
-`repo-settings.yml`) governs **actions** only, so a tag in a *third-party*
+`repo-settings.yml`) governs actions only, so a tag in a *third-party*
 reusable-workflow ref is for review to catch.
+
+## A test that can signal can kill every session
+
+2026-10-04: a skills-evals test ([#250](https://github.com/Adam-S-Daniel/skills-evals/pull/250))
+mocked `Popen`; cleanup's `os.killpg(proc.pid, SIGKILL)` hit the mock.
+`MagicMock` converts to the int `1` and `killpg(1, sig)` is `kill(-1, sig)`:
+every user process died.
+
+- **Code that signals refuses any pid or group but an `int` > 1**, before the
+  call.
+- **A test that mocks a spawn patches every signal call** the code can reach.
+- **A sandboxed 137 with no OOM is a finding.** Never escalate out
+  (`require_escalated`, `dangerouslyDisableSandbox`); it contained the
+  kill. Find what sent the signal.
+- **A session that dies mid-verifier is evidence against it.** After a
+  restart, find what killed it (journal, 137, `dmesg`) before re-running:
+  resumed agents re-running the suite made one kill fifteen (2026-10-04).
+- **Run spawning or signaling suites in a PID namespace:**
+  `unshare --user --map-current-user --pid --fork --mount-proc -- <cmd>`.
 
 ## Subagent delegation (model routing)
 
@@ -340,13 +349,13 @@ reusable-workflow ref is for review to catch.
   exactly-specified edits, a mid tier for a clear spec; escalate rather than
   ship a wrong diff on anything subtle. The orchestrator keeps root cause,
   architecture, the spec (files, exact changes, house style, test command) and
-  diff review; output faces the same test/CI proof. A child that skips this
-  file (e.g. Explore/Plan or `omitClaudeMd` agents, SDK harnesses with
+  diff review. A child that skips this
+  file (Explore/Plan or `omitClaudeMd` agents, SDK harnesses with
   `settingSources: []`) needs constraints in its prompt.
-- Delegated work is done when a **verifier exits 0**: name the exact
-  command, run LAST (after a trailing `echo $?` the tool's exit code is the
-  echo's), and require its code back. "Cannot run it" is BLOCKED; a count
-  off-spec, stop-and-report; a self-contradicting report ("2 failed",
+- Delegated work is done when a verifier exits 0: name the exact
+  command, run LAST (a trailing `echo $?` hides the tool's code), and
+  require its code back. "Cannot run it" is BLOCKED; a count off-spec,
+  stop-and-report; a self-contradicting report ("2 failed",
   "exit 0"), re-run it. **Prove the verifier can fail first:**
   `python3 test_foo.py` with no `__main__` block exits 0 having asserted
   nothing (2026-08-22). Name the RUNNER (`python3 -m pytest <paths> -q`),
@@ -367,22 +376,22 @@ reusable-workflow ref is for review to catch.
   and the fallback in advance.
 - **A live-test prompt states the credential boundary** — which
   `HOME`/profile, what it may read, and that it must not copy real
-  credentials to pass (a reviewer once did). Supply a throwaway one or run
+  credentials to pass. Supply a throwaway one or run
   unauthenticated; else it's the operator's call.
 - **A scratch tree can still reach production.** `cp -a` copies
   `.git/config`, so a copy inherits `origin`; but `git remote remove origin`
-  in a `git worktree` strips the PARENT's remote. Run **`/adam-coding-anywhere:disarm-inherited-reach`**
-  before disarming anything.
+  in a `git worktree` strips the PARENT's remote. Run `/adam-coding-anywhere:disarm-inherited-reach`
+  before disarming.
 
 ## Skills ecosystem
 
 - The registry is `Adam-S-Daniel/adam-agentskills`: plugins
-  `adam-anything-anywhere`, `adam-coding-anywhere` (cloud-safe, default-on),
-  `adam-coding-local`, `adam-non-coding-local` (machine-bound); invoke
+  `adam-anything-anywhere`, `adam-coding-anywhere`,
+  `adam-coding-local`, `adam-non-coding-local`; invoke
   `/<plugin>:<skill>`; `setup.sh` sets up a machine.
 - **A `git push` failing in EVERY repo**: retired sync-skills hook targets a
   deleted script; `setup.sh --owner-machine` removes it.
-- Cloud/ephemeral sessions get **no** plugins from repo-declared settings
+- Cloud/ephemeral sessions get no plugins from repo-declared settings
   (registry ADR 0001): the repo's `skills.lock` and `skills-bootstrap`
   SessionStart hook install the bundles, digest-verified; read the
   `skills:` verdict at start.
@@ -393,7 +402,7 @@ reusable-workflow ref is for review to catch.
 - **Terminals load the claude.ai account's skills** as `/<name>` (or
   `/anthropic-skills:<name>` if taken); `setup.sh` opts a machine out
   (`syncClaudeAiSkills: false`), cloud can't (registry ADR 0010).
-- New reusable skills graduate **into** the registry (sensitive ones in
+- New reusable skills graduate into the registry (sensitive ones in
   `adam-agentskills-private`); a long skill splits across files.
 
 ## Two setup gaps you may close, and must not nag about
@@ -405,11 +414,11 @@ say nothing when the check passes.** Once per session, not as a greeting, not on
 `$CLAUDE_PROJECT_DIR` when set (**unset** in `remote_mobile`), else the
 nearest ancestor of the cwd holding more than one repo checkout; an empty
 value probes `/` and silently suppresses the prompt.
-Prompt only when **all four** hold:
+Prompt only when all four hold:
 
 1. hosted — entrypoint `remote*`/`claude_in_slack`/`claude-in-slack`/
    `claude-in-teams`, **or** `$CLAUDE_CODE_REMOTE_SESSION_ID` is set;
-2. **multi-repo** — `$project` has no `skills.lock` but a child does;
+2. multi-repo — `$project` has no `skills.lock` but a child does;
 3. `$project/.claude/settings.json` does not already register a
    `skills-bootstrap` SessionStart hook;
 4. some child ships `.claude/hooks/skills-bootstrap.sh`.
@@ -418,20 +427,20 @@ Then say it once, naming the snippet's home (adam-agentskills'
 `docs/multi-repo-delivery.md`; do not paraphrase it), and drop it.
 
 **Durable machine — ACT, then one line.** `claude plugin marketplace list
---json` returns `[]` when nothing is configured: **absent** → `claude plugin
+--json` returns `[]` when nothing is configured: absent → `claude plugin
 marketplace add Adam-S-Daniel/adam-agentskills` and install the plugins wanted;
-**marketplace behind** → `claude plugin marketplace update adam-agentskills`;
-**install behind** → below; **both current** → silence.
+marketplace behind → `claude plugin marketplace update adam-agentskills`;
+install behind → below; both current → silence.
 The clone (that list's `installLocation`; never assume it) auto-updates while
 the installed bundle (`installPath`) never moves, so check the INSTALL (the
-owner's laptop, 2026-08-31: **381 commits** behind): after the refresh,
+owner's laptop, 2026-08-31: 381 commits behind): after the refresh,
 compare each `gitCommitSha` in `~/.claude/plugins/installed_plugins.json`
 with `git -C <clone> rev-parse HEAD` — equal is current, another sha behind,
 none unknown. The clone is `--depth 1`, so `merge-base`/`rev-list` exit 128.
 **`claude plugin update` may not fix it, yet says it did** (it gates on
 the `version` string alone; registry ADR 0009) — uninstall and reinstall
-instead. An update changes what loads **next** session; a marketplace
-refresh does not move a federated bundle. Neither check belongs in a repo's `AGENTS.md`.
+instead. An update changes what loads next session; a marketplace
+refresh does not move a federated bundle. Neither belongs in a repo's `AGENTS.md`.
 
 ## Git practices
 
@@ -450,9 +459,9 @@ refresh does not move a federated bundle. Neither check belongs in a repo's `AGE
 - **Before a PR, `git log origin/<base>..HEAD --oneline` lists only this
   task's commits.** A reusable worktree (`.claude/worktrees/<name>/`) carries
   stale WIP, once a commit that *deleted* files the task edits. Anything
-  extra: `git checkout -b <new> origin/<base>` and redo the work there.
+  extra: `git checkout -b <new> origin/<base>` and redo the work.
 - **One worktree per independent coding session**, pre-authorized: reuse it
-  on resume, not per turn; edit, build, test there, leaving the original
-  checkout and others' worktrees untouched. If creation fails, resolve or
-  explain before using the shared checkout. No git: a separate copy. Read-only
-  tasks and requested global-settings changes use targets directly.
+  on resume, not per turn; edit, build, test there, leaving other checkouts
+  untouched. If creation fails, resolve or explain before using the shared
+  checkout. No git: a separate copy. Read-only tasks and requested
+  global-settings changes use targets directly.
