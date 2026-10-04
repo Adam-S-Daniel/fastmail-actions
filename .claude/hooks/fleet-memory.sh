@@ -105,14 +105,236 @@
 # the one that failed.
 set -uo pipefail
 
+# Observation is optional and never participates in delivery decisions. The
+# embedded helper ships with this hook; sync needs no additional artifact.
+: <<'FLEET_RECEIPT_PY'
+import errno
+import hashlib
+import json
+import os
+import stat
+import sys
+import time
+
+RECEIPT_LIMIT = 1048576
+
+
+def receipt_source(path, begin, end, directory_fd=None):
+    # Read only a validated delivered file; hash its unique managed block.
+    options = {} if directory_fd is None else {"dir_fd": directory_fd}
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, **options)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                info.st_uid != os.geteuid() or info.st_size > 4194304):
+            raise OSError("unsafe receipt source")
+        remaining = info.st_size
+        pieces = []
+        while remaining:
+            piece = os.read(fd, min(remaining, 65536))
+            if not piece:
+                raise OSError("short receipt source")
+            pieces.append(piece)
+            remaining -= len(piece)
+        raw = b"".join(pieces)
+    finally:
+        os.close(fd)
+    offset = 0
+    start = stop = None
+    for line in raw.splitlines(keepends=True):
+        if line.rstrip(b"\r\n") == begin.encode():
+            if start is not None:
+                raise ValueError("ambiguous receipt block")
+            start = offset
+        if line.rstrip(b"\r\n") == end.encode():
+            if start is None or stop is not None:
+                raise ValueError("ambiguous receipt block")
+            stop = offset + len(line)
+        offset += len(line)
+    if start is None or stop is None:
+        raise ValueError("missing receipt block")
+    block = raw[start:stop]
+    return hashlib.sha256(block).hexdigest(), len(block)
+
+
+class ReceiptUnsupported(Exception):
+    pass
+
+
+def receipt_capabilities():
+    required = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK", "geteuid", "fpathconf")
+    # Check platform support by name: syscall fault injectors may wrap os.open.
+    supported = {function.__name__ for function in getattr(os, "supports_dir_fd", ())}
+    if any(not hasattr(os, name) for name in required) or not {"open", "stat"} <= supported:
+        raise ReceiptUnsupported()
+    if not any(function.__name__ == "stat" for function in
+               getattr(os, "supports_follow_symlinks", ())):
+        raise ReceiptUnsupported()
+
+
+def receipt_platform(call, *args, **kwargs):
+    # Unsupported descriptor primitives silently skip best-effort observation.
+    try:
+        return call(*args, **kwargs)
+    except NotImplementedError:
+        raise ReceiptUnsupported() from None
+
+
+def receipt_directory(directory):
+    receipt_capabilities()
+    descriptors = []
+    try:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+        path = directory if os.path.isabs(directory) else os.path.join(os.getcwd(), directory)
+        parent = receipt_platform(os.open, "/", flags)
+        descriptors.append(parent)
+        for component in path.split("/")[1:]:
+            if component in ("", "."):
+                continue
+            if component == "..":
+                raise OSError("unsafe receipt directory")
+            try:
+                parent = receipt_platform(os.open, component, flags, dir_fd=parent)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR) and stat.S_ISLNK(
+                        receipt_platform(os.stat, component, dir_fd=parent, follow_symlinks=False).st_mode):
+                    raise ReceiptUnsupported() from None
+                raise
+            descriptors.append(parent)
+        receipt_platform(os.fpathconf, parent, "PC_PIPE_BUF")
+        return descriptors
+    except BaseException:
+        for fd in reversed(descriptors):
+            os.close(fd)
+        raise
+
+
+def receipt_write(directory, mode, deliveries):
+    # Validate support and every parent BEFORE optional clock or digest work.
+    descriptors = receipt_directory(directory)
+    try:
+        record = {"ts": int(time.time()), "hook": "fleet-memory",
+                  "load_reason": "delivery", "mode": mode, "deliveries": deliveries}
+        line = (json.dumps(record, separators=(",", ":")) + "\n").encode()
+        parent = descriptors[-1]
+        fd = receipt_platform(os.open, "fleet-delivery.jsonl", os.O_WRONLY | os.O_APPEND |
+                     os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=parent)
+        descriptors.append(fd)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+            raise OSError("unsafe receipt")
+        if info.st_size >= RECEIPT_LIMIT:
+            return
+        if len(line) >= min(4096, receipt_platform(os.fpathconf, fd, "PC_PIPE_BUF")):
+            raise OSError("oversized receipt")
+        # One append syscall, no retries, read/modify/write, locks, or rotation.
+        if os.write(fd, line) != len(line):
+            raise OSError("short receipt write")
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def receipt_delivery(label, outcome, digest=None, count=0):
+    return {"file_path": label, "memory_type": "User", "outcome": outcome,
+            "sha256": digest, "bytes": count}
+
+
+def receipt_worker(directory, mode, begin, end, *args):
+    try:
+        # Reject unsupported receipt paths before any optional digest work.
+        descriptors = receipt_directory(directory)
+        for fd in reversed(descriptors):
+            os.close(fd)
+        if mode not in ("hook", "workspace", "codex-cloud"):
+            raise ValueError("invalid receipt mode")
+        if len(args) not in (5, 10) or sum(len(os.fsencode(arg)) + 1 for arg in args) >= 4096:
+            raise ValueError("invalid receipt metadata")
+        deliveries = []
+        for i in range(0, len(args), 5):
+            label, outcome, source, digest, count = args[i:i + 5]
+            if label not in ("none", "claude/CLAUDE.md", "codex/AGENTS.md", "codex/AGENTS.override.md"):
+                raise ValueError("invalid receipt label")
+            if outcome not in ("written", "installed", "current", "kept", "skipped", "degraded"):
+                raise ValueError("invalid receipt outcome")
+            count = int(count)
+            if source:
+                source_descriptors = receipt_directory(os.path.dirname(source))
+                try:
+                    digest, count = receipt_source(os.path.basename(source), begin, end,
+                                                   source_descriptors[-1])
+                finally:
+                    for fd in reversed(source_descriptors):
+                        os.close(fd)
+            if digest and (len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)):
+                raise ValueError("invalid receipt digest")
+            if count < 0 or count > 4194304 or bool(digest) != bool(count):
+                raise ValueError("invalid receipt bytes")
+            deliveries.append(receipt_delivery(label, outcome, digest or None, count))
+        receipt_write(directory, mode, deliveries)
+    except Exception:
+        # Observation is detached, silent, and never controls delivery.
+        pass
+
+
+if __name__ == "__main__":
+    receipt_worker(*sys.argv[1:])
+FLEET_RECEIPT_PY
+RECEIPT_MODE=hook
+RECEIPT_ARGS=()
+RECEIPT_BROKEN=0
+RECEIPT_SOURCE=""
+# shellcheck disable=SC2317  # invoked by EXIT traps, including early failures
+receipt_flush() {
+    [ "${FLEET_GUIDANCE_RECEIPT:-1}" != 0 ] || return 0
+    if [ "$RECEIPT_BROKEN" -ne 0 ]; then RECEIPT_ARGS=(none degraded "" invalid 0)
+    elif [ "${#RECEIPT_ARGS[@]}" -eq 0 ]; then RECEIPT_ARGS=(none degraded "" "" 0); fi
+    local receipt_directory="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
+    [ "$RECEIPT_MODE" != codex-cloud ] || receipt_directory="$CODEX_DEST_DIR"
+    # Bash 3.2 and Git Bash support this detached launch. Every stream is closed
+    # so the writer cannot retain caller output pipes or read hook events.
+    (python3 -c '
+import os, stat, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_size > 4194304:
+            raise OSError("unsafe receipt helper")
+        remaining, pieces = info.st_size, []
+        while remaining:
+            piece = os.read(fd, min(remaining, 65536))
+            if not piece:
+                raise OSError("short receipt helper")
+            pieces.append(piece)
+            remaining -= len(piece)
+        source = b"".join(pieces).decode("utf-8")
+    finally:
+        os.close(fd)
+    marker = ": <<" + chr(39) + "FLEET_RECEIPT_PY" + chr(39) + "\n"
+    helper = source.split(marker, 1)[1].split("\nFLEET_RECEIPT_PY\n", 1)[0]
+    namespace = {"__name__": "receipt"}
+    exec(helper, namespace)
+    namespace["receipt_worker"](*sys.argv[2:])
+except Exception:
+    pass
+' "${BASH_SOURCE[0]}" "$receipt_directory" "$RECEIPT_MODE" \
+        "${BEGIN_MARK:-}" "${END_MARK:-}" \
+        "${RECEIPT_ARGS[@]}" </dev/null >/dev/null 2>&1 &) 2>/dev/null || :
+    return 0
+}
+trap receipt_flush EXIT
+
 CODEX_CLOUD=0
 WORKSPACE_DIR=""
 if [ "$#" -eq 0 ]; then
     :
 elif [ "$#" -eq 1 ] && [ "$1" = --codex-cloud ]; then
     CODEX_CLOUD=1
+    RECEIPT_MODE=codex-cloud
 elif [ "$#" -eq 2 ] && [ "$1" = --workspace ] && [ -d "$2" ]; then
     WORKSPACE_DIR="$2"
+    RECEIPT_MODE=workspace
 else
     echo "fleet-guidance: DEGRADED — unknown argument or nonexistent workspace directory; expected no arguments, --codex-cloud, or --workspace <dir>"
     exit 2
@@ -153,7 +375,7 @@ if [ -n "$WORKSPACE_DIR" ]; then
 fi
 # shellcheck disable=SC2317  # reached through both EXIT traps below
 workspace_notice() { [ -z "$WORKSPACE_LINE" ] || printf '%s\n' "$WORKSPACE_LINE"; }
-trap workspace_notice EXIT
+trap 'workspace_notice; receipt_flush' EXIT
 
 BEGIN_MARK='<!-- BEGIN FLEET GUIDANCE (managed by _agent-guidance) — DO NOT EDIT -->'
 END_MARK='<!-- END FLEET GUIDANCE -->'
@@ -238,6 +460,10 @@ import stat
 import sys
 import tempfile
 
+receipt_outcome = "degraded"
+receipt_block = None
+receipt_label = "none"
+
 
 class Refusal(Exception):
     pass
@@ -312,6 +538,7 @@ try:
     else:
         target = agents
     label = "~/.codex/AGENTS.override.md" if target == override else "~/.codex/AGENTS.md"
+    receipt_label = "codex/AGENTS.override.md" if target == override else "codex/AGENTS.md"
 
     original = b""
     original_mode = None
@@ -374,6 +601,9 @@ try:
                 except OSError:
                     pass
 
+    receipt_outcome = "skipped" if skip else "installed" if changed else "current"
+    if changed and not skip:
+        receipt_block = block
     if skip:
         print(verdict)
     elif changed:
@@ -386,9 +616,27 @@ except Refusal as exc:
 except Exception:
     print("fleet-guidance: DEGRADED — unexpected Cloud setup failure")
     raise SystemExit(1)
+finally:
+    if os.environ.get("FLEET_GUIDANCE_RECEIPT", "1") != "0":
+        try:
+            digest = hashlib.sha256(receipt_block).hexdigest() if receipt_block is not None else ""
+            count = len(receipt_block) if receipt_block is not None else 0
+            # Private metadata is stripped before any verdict reaches stdout.
+            print("fleet-receipt-meta:" + "|".join((receipt_label, receipt_outcome, digest, str(count))))
+        except Exception:
+            print("fleet-receipt-meta:broken")
 PY
 )"
     cloud_status=$?
+    if [[ "$cloud_result" == *$'\n'fleet-receipt-meta:* ]]; then
+        cloud_meta="${cloud_result##*$'\n'fleet-receipt-meta:}"
+        cloud_result="${cloud_result%$'\n'fleet-receipt-meta:*}"
+        if [ "$cloud_meta" = broken ]; then RECEIPT_BROKEN=1
+        else
+            IFS='|' read -r receipt_label receipt_outcome receipt_digest receipt_bytes <<< "$cloud_meta"
+            RECEIPT_ARGS=("$receipt_label" "$receipt_outcome" "" "$receipt_digest" "$receipt_bytes")
+        fi
+    fi
     if [ -z "$cloud_result" ]; then
         cloud_result="fleet-guidance: DEGRADED — Python 3 is unavailable for Codex Cloud setup"
         cloud_status=1
@@ -459,6 +707,7 @@ TMP_FILES=()
 # shellcheck disable=SC2317  # reached through the EXIT trap below, not by a call
 cleanup_tmp() {
     workspace_notice
+    receipt_flush
     [ "${#TMP_FILES[@]}" -eq 0 ] && return 0
     local t
     for t in "${TMP_FILES[@]}"; do rm -f "$t"; done
@@ -622,6 +871,8 @@ case "$FLEET_GUIDANCE_SKIP_ENABLED" in
         else
             echo "fleet-guidance: skipped (FLEET_GUIDANCE_SKIP set)"
         fi
+        RECEIPT_ARGS=(none skipped "" "" 0)
+        [ -z "$FAILURES" ] || RECEIPT_ARGS=(none degraded "" "" 0)
         exit 0
         ;;
 esac
@@ -700,6 +951,7 @@ update_stamp_only() {
 install_to() {
     local dest="$1" label="$2" tmp dir target
     INSTALL_STATE=""
+    RECEIPT_SOURCE=""
 
     # The parent directory: created for Claude Code exactly as it always was,
     # and a no-op for Codex, whose directory had to exist for this destination
@@ -743,6 +995,7 @@ install_to() {
             fi
             if replace_file "$tmp" "$target"; then
                 INSTALL_STATE="current"
+                RECEIPT_SOURCE="$target"
                 return 0
             fi
             record_failure "could not write $dest"
@@ -783,6 +1036,7 @@ install_to() {
 
     if replace_file "$tmp" "$target"; then
         INSTALL_STATE="written"
+        RECEIPT_SOURCE="$target"
         return 0
     fi
 
@@ -795,7 +1049,12 @@ KEPT=""
 local_labels=""
 for i in "${!DEST_PATHS[@]}"; do
     dest="${DEST_PATHS[$i]}"; label="${DEST_LABELS[$i]}"
-    install_to "$dest" "$label" || continue
+    receipt_label="${label#\~/\.}"
+    if ! install_to "$dest" "$label"; then
+        RECEIPT_ARGS+=("$receipt_label" degraded "" "" 0)
+        continue
+    fi
+    RECEIPT_ARGS+=("$receipt_label" "$INSTALL_STATE" "$RECEIPT_SOURCE" "" 0)
     case "$INSTALL_STATE" in
         written)
             wrote=$((wrote + 1))
