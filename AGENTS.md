@@ -14,10 +14,8 @@
 The account's full guidance — incidents, fleet policy, machine layout, the
 traps that cost real outages — is installed into **user memory**
 (`~/.claude/CLAUDE.md`) by the `fleet-memory` SessionStart hook, so it is
-loaded **once per session** no matter how many repos are attached. It used to
-be inlined here in every repo, which meant a session with 19 repos open
-carried 19 identical copies: 332.3k tokens of a 1M window, measured
-2026-08-29.
+loaded **once per session** no matter how many repos are attached
+([2026-08-29: inlined per repo, it took 332.3k tokens](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/2026-08-29-guidance-inlined-in-every-repo.md)).
 
 **Check the session-start verdict before you rely on it.** The hook prints one
 line:

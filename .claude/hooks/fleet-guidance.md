@@ -325,10 +325,8 @@ reusable-workflow ref is for review to catch.
 
 ## A test that can signal can kill every session
 
-2026-10-04: a skills-evals test ([#250](https://github.com/Adam-S-Daniel/skills-evals/pull/250))
-mocked `Popen`; cleanup's `os.killpg(proc.pid, SIGKILL)` hit the mock.
-`MagicMock` converts to the int `1` and `killpg(1, sig)` is `kill(-1, sig)`:
-every user process died.
+2026-10-04: a mocked pid became `kill(-1, SIGKILL)`; every user process died
+([evidence](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/2026-10-04-killpg-on-a-mocked-pid.md)).
 
 - **Code that signals refuses any pid or group but an `int` > 1**, before the
   call.
