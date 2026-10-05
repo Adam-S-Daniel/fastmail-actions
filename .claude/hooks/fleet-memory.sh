@@ -415,6 +415,14 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || HOOK_DIR
 PAYLOAD="${FLEET_GUIDANCE_PAYLOAD:-$HOOK_DIR/fleet-guidance.md}"
 CODEX_DEST_DIR="${CODEX_HOME:-$HOME/.codex}"
 
+# base.md opens with a repo-file header ("# AGENTS.md", then "Edit only below
+# the `## Repo-specific additions` header"). It is true in a full-mode repo
+# AGENTS.md, which base.md also builds, and false in user memory, which has no
+# such heading. Delivery drops exactly this prefix, trailing blank line
+# included; a payload that does not start with it is delivered verbatim. The
+# version id and byte count still describe the payload file itself.
+PAYLOAD_REPO_HEADER=$'# AGENTS.md\n\n> **Managed by [`_agent-guidance`].**\n> Edit only below the `## Repo-specific additions` header.\n> Everything above it will be overwritten on the next sync.\n\n'
+
 # The payload's bytes are an exact copy of agents-md/base.md, so an ordering
 # key cannot live inside them. Its last commit tells when this checkout
 # received those bytes; a dirty or untracked payload uses its file mtime.
@@ -480,7 +488,7 @@ esac
 if [ "$CODEX_CLOUD" -eq 1 ]; then
     cloud_result="$(python3 - \
         "$CODEX_DEST_DIR" "$PAYLOAD" "$BEGIN_MARK" "$END_MARK" \
-        "$FLEET_GUIDANCE_SKIP_ENABLED" 2>/dev/null <<'PY'
+        "$FLEET_GUIDANCE_SKIP_ENABLED" "$PAYLOAD_REPO_HEADER" 2>/dev/null <<'PY'
 import hashlib
 import os
 import pathlib
@@ -537,6 +545,7 @@ try:
     begin = sys.argv[3].encode()
     end = sys.argv[4].encode()
     skip = sys.argv[5] == "1"
+    repo_header = sys.argv[6].encode()
 
     payload = b""
     if not skip:
@@ -588,7 +597,8 @@ try:
         verdict = f"fleet-guidance: skipped (FLEET_GUIDANCE_SKIP set) — persisted in {label}"
     else:
         version = hashlib.sha256(payload).hexdigest()[:8]
-        payload_body = payload if payload.endswith(b"\n") else payload + b"\n"
+        payload_body = payload[len(repo_header):] if payload.startswith(repo_header) else payload
+        payload_body = payload_body if payload_body.endswith(b"\n") else payload_body + b"\n"
         persisted = (
             f"fleet-guidance: installed (v{version}, {len(payload)} bytes) "
             "— Codex Cloud setup and maintenance"
@@ -918,6 +928,18 @@ version="${version:0:8}"
 
 bytes="$(wc -c < "$PAYLOAD" 2>/dev/null | tr -d ' ')"
 
+# Write the payload without PAYLOAD_REPO_HEADER (see its definition). LC_ALL=C
+# makes the length a byte count, which head -c and tail -c expect.
+emit_payload() {
+    local n
+    n="$(LC_ALL=C; printf '%s' "${#PAYLOAD_REPO_HEADER}")"
+    if [ "$(head -c "$n" "$PAYLOAD"; printf x)" = "${PAYLOAD_REPO_HEADER}x" ]; then
+        tail -c "+$((n + 1))" "$PAYLOAD"
+    else
+        cat "$PAYLOAD"
+    fi
+}
+
 # See docs/decisions/0016-the-freshest-delivery-wins-the-shared-global-block.md.
 payload_stamp "$PAYLOAD"
 delivered="$PAYLOAD_STAMP"
@@ -1050,7 +1072,7 @@ install_to() {
         printf '%s\n' "$BEGIN_MARK" &&
         printf '<!-- fleet-guidance-version: %s -->\n' "$version" &&
         printf '<!-- fleet-guidance-delivered: %s -->\n' "$delivered" &&
-        cat "$PAYLOAD" &&
+        emit_payload &&
         printf '%s\n' "$END_MARK"
     } >> "$tmp" 2>/dev/null || {
         record_failure "could not assemble the guidance block for $dest"
