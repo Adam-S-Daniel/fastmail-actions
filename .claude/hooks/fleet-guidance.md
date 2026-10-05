@@ -431,16 +431,15 @@ Then say it once, naming the snippet's home (adam-agentskills'
 marketplace add Adam-S-Daniel/adam-agentskills` and install the plugins wanted;
 marketplace behind → `claude plugin marketplace update adam-agentskills`;
 install behind → below; both current → silence.
-The clone (that list's `installLocation`; never assume it) auto-updates while
-the installed bundle (`installPath`) never moves, so check the INSTALL (the
-owner's laptop, 2026-08-31: 381 commits behind): after the refresh,
-compare each `gitCommitSha` in `~/.claude/plugins/installed_plugins.json`
-with `git -C <clone> rev-parse HEAD` — equal is current, another sha behind,
-none unknown. The clone is `--depth 1`, so `merge-base`/`rev-list` exit 128.
-**`claude plugin update` may not fix it, yet says it did** (it gates on
-the `version` string alone; registry ADR 0009) — uninstall and reinstall
-instead. An update changes what loads next session; a marketplace
-refresh does not move a federated bundle. Neither belongs in a repo's `AGENTS.md`.
+Use CLI ≥ 2.1.280 for recorded commits (older updates kept stale SHAs).
+After refreshing the clone (`installLocation`), compare each `gitCommitSha`
+in `~/.claude/plugins/installed_plugins.json` with `git -C <clone> rev-parse HEAD`:
+equal is current, different needs inspection, missing is unknown. Locate the
+bundle via `installPath`; a marketplace refresh does not update it.
+The clone is `--depth 1`, so ancestry/count checks may exit 128.
+Try `claude plugin update`, then recheck; if still stale, uninstall/reinstall
+(registry ADR 0009's version-gate case). Updates load next session. Neither
+belongs in a repo's `AGENTS.md`.
 
 ## Git practices
 
