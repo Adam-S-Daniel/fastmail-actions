@@ -1,6 +1,6 @@
 {
   "registry": "Adam-S-Daniel/adam-agentskills",
-  "ref": "766357e272ae831750d6ff1b7cad5082624c1499",
+  "ref": "b0a1b0d0826b18a0ca6e58a8fc4223437a9e593d",
   "bundles": [
     "adam-anything-anywhere",
     "adam-coding-anywhere"
@@ -8,13 +8,13 @@
   "skills": {
     "adam-anything-anywhere/finding-unknowns": "sha256:a67b7663b5b44d07cfddeb923ce19f3cf79447e052658a69cf7fcb985fc0130d",
     "adam-anything-anywhere/writing-adrs": "sha256:4e9a4b9472bd3d92501bf0d7f882544ba66e8b03aa48bac7fa1689c45d903820",
-    "adam-coding-anywhere/debug-github-workflows": "sha256:a695b854250e5c6b8255558354108a406ba2197c500d27173cb7a83b9beb1ffd",
+    "adam-coding-anywhere/debug-github-workflows": "sha256:e2694c8c35223c6bf8eb0691fa99766a5ee4665ec33c0bbb73c4503697c29ff3",
     "adam-coding-anywhere/disarm-inherited-reach": "sha256:3e355e35d7012c34d475711e8b438bfc5075deb92982b7561e1f9bb40054b893",
-    "adam-coding-anywhere/github-actions-repo-settings": "sha256:7f9f2b325cbc782c4c265a7d60f26f3c4a1812a2ca778ed3522f5ebd1d41db28",
-    "adam-coding-anywhere/review-bash-ci-reliability": "sha256:1e1c2993689cfe79b6f1345de09101ff7d3b4b902a34ae5b458ee86e3f28f8b9",
-    "adam-coding-anywhere/skills-doctor": "sha256:572ba884709f5131456f7773cf5f5e92d9ee6b93c5f6a7e333663f17f7098f5c",
+    "adam-coding-anywhere/github-actions-repo-settings": "sha256:baf18eb537be1b3587dd9b49d58a4e5c0bc5d70d33047b03ea05d2b20d67ed2f",
+    "adam-coding-anywhere/review-bash-ci-reliability": "sha256:df5ec0ca21602933fec981af7bbd6d8d668a9bb4f463cde44677843d5dc1e880",
+    "adam-coding-anywhere/skills-doctor": "sha256:b0cdd12ecd4757208ad2070535dbfe74d127f47e2ed7815245fada910aa12d5a",
     "adam-coding-anywhere/vendor-release-impact-issues": "sha256:b7bc6f17c002a05b5c5c517ddf598c717820ef808d5d240a5e8e9d6e68a7c426",
     "adam-coding-anywhere/workflow-path-audit": "sha256:8a7c57bcd890bbab38c42473d8705f0b2521954385f03bf5289e3ec84d3fcdde"
   },
-  "generated_from": "766357e272ae831750d6ff1b7cad5082624c1499"
+  "generated_from": "b0a1b0d0826b18a0ca6e58a8fc4223437a9e593d"
 }
