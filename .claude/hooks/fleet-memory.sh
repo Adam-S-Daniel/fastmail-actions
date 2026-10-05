@@ -310,11 +310,16 @@ receipt_flush() {
 import _signal as signal
 try:
     signal.signal(signal.SIGALRM, signal.SIG_DFL)
-    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
     signal.alarm(5)
 except (AttributeError, OSError, ValueError):
     # Platforms without a usable POSIX alarm skip optional observation.
     raise SystemExit(0)
+try:
+    # An inherited block would defer the deadline. A Python without masks
+    # still keeps the armed alarm and writes the receipt.
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+except (AttributeError, OSError, ValueError):
+    pass
 import site
 site.main()
 import os, stat, sys
