@@ -41,8 +41,11 @@ The hook writes the same block to `~/.codex/AGENTS.md` whenever `~/.codex`
 exists — Codex's global **user** instructions, outside its 32 KiB
 `project_doc_max_bytes` project-doc budget. Register it once per machine with
 `scripts/register-codex-hook.sh` from an `_agent-guidance` checkout, then
-trust it in `/hooks`. `codex debug prompt-input` shows exactly what a session
-loaded; no `fleet-guidance:` line there means DEGRADED.
+trust it in `/hooks`. `codex debug prompt-input` renders instructions loaded
+from disk by its own diagnostic process; it does not run SessionStart hooks
+or inspect an existing session or daemon. Verify delivery in the launched
+session's initial instructions and verdict; see the
+[2026-10-04 evidence](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/codex-trust-and-daemon-0160.md#prompt-debugging-source-read-2026-10-04-cli-01600-rust-v01600).
 
 For Codex Cloud, use **Manual** environment setup with persistent
 `CODEX_HOME=/opt/codex`. Preserve the repository's dependency setup and run
