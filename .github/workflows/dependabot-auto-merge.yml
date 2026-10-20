@@ -90,12 +90,16 @@ jobs:
         # branch — either way, refuse to auto-merge. Inline port of
         # cms-platform's scripts/check-dependabot-manifest-paths.sh; keep in
         # lockstep with the identical block in job `sweep` below.
+        #
+        # `--no-renames` on both diffs: with rename detection on, `--name-only`
+        # prints only a rename's new name, so a non-manifest file renamed
+        # into an allowed path would be deleted unseen by this allowlist.
         run: |
           set -euo pipefail
           BASE="origin/${{ github.event.pull_request.base.ref }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
 
-          mapfile -t CHANGED < <(git diff --name-only "$BASE"..."$HEAD")
+          mapfile -t CHANGED < <(git diff --no-renames --name-only "$BASE"..."$HEAD")
           echo "Files changed (${BASE}...${HEAD}):"
           printf '  %s\n' "${CHANGED[@]}"
 
@@ -302,7 +306,7 @@ jobs:
             # Re-run the SAME inline manifest-path allowlist as job
             # `auto-merge` above — keep the two blocks in lockstep.
             REJECT=0
-            mapfile -t CHANGED < <(git diff --name-only "origin/${base}...dependabot-sweep/pr-${num}")
+            mapfile -t CHANGED < <(git diff --no-renames --name-only "origin/${base}...dependabot-sweep/pr-${num}")
             for f in "${CHANGED[@]}"; do
               case "$f" in
                 package.json|*/package.json|package-lock.json|*/package-lock.json) ;;
