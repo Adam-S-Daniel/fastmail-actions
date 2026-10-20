@@ -93,8 +93,10 @@ jobs:
 
           # The pull_request checkout is GitHub's synthetic merge commit; its
           # first parent is the base branch tip, so diffing against HEAD^1
-          # gives exactly the files this PR changes.
-          if ! changed=$(git diff --name-only HEAD^1 HEAD 2>&1); then
+          # gives exactly the files this PR changes. --no-renames lists both
+          # sides of a rename, so moving a file out of a salient path still
+          # counts as touching it.
+          if ! changed=$(git diff --no-renames --name-only HEAD^1 HEAD 2>&1); then
             first_line=$(printf '%s\n' "$changed" | head -n1)
             echo "::warning::could not diff the merge commit against its base (${first_line}); running the suite unconditionally"
             echo "run=true" >> "$GITHUB_OUTPUT"

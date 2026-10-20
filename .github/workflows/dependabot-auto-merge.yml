@@ -83,7 +83,9 @@ jobs:
       - name: Verify only manifest paths changed
         id: paths
         # Path allowlist: dependency manifests/lockfiles (any directory) plus
-        # workflow YAML. Dependabot never touches anything else, so a diff
+        # workflow YAML and the workflow action lockfile
+        # (.github/workflows/actions.lock, which Dependabot rewrites alongside
+        # each action bump). Dependabot never touches anything else, so a diff
         # outside this list means either a misconfiguration or a tampered
         # branch — either way, refuse to auto-merge. Inline port of
         # cms-platform's scripts/check-dependabot-manifest-paths.sh; keep in
@@ -105,6 +107,7 @@ jobs:
               pyproject.toml|*/pyproject.toml|poetry.lock|*/poetry.lock) ;;
               requirements*.txt|*/requirements*.txt) ;;
               .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+              .github/workflows/actions.lock) ;;
               *)
                 echo "::error file=$f::Dependabot PR touches non-manifest path: $f"
                 REJECT=1
@@ -307,6 +310,7 @@ jobs:
                 pyproject.toml|*/pyproject.toml|poetry.lock|*/poetry.lock) ;;
                 requirements*.txt|*/requirements*.txt) ;;
                 .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+                .github/workflows/actions.lock) ;;
                 *)
                   echo "::warning::#${num} touches non-manifest path on re-check: $f"
                   REJECT=1
