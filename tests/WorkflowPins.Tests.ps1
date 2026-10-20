@@ -3,9 +3,9 @@
   Action-pin tests for this repo's own workflows: every third-party step
   `uses:` must be locked in .github/workflows/actions.lock, every non-local
   reusable workflow must carry a full commit SHA, and the `pester` job's
-  "Verify action lockfile" step must keep its guard lines. Workflow and
-  lockfile YAML is parsed with powershell-yaml. CI installs it; locally the
-  tests skip when it is missing.
+  "Verify action lockfile" step must be the shared verify-actions-lock
+  action. Workflow and lockfile YAML is parsed with powershell-yaml. CI
+  installs it; locally the tests skip when it is missing.
 #>
 
 BeforeDiscovery {
@@ -38,12 +38,26 @@ BeforeDiscovery {
 }
 
 BeforeAll {
-    # Hashtable keys from ConvertFrom-Yaml may compare case-insensitively; a
-    # lockfile key must match the workflow's uses: byte for byte, so look keys
-    # up with -ceq and refuse an ambiguous match.
+    # gh-actions-lock lowercases the owner/repo part of a lockfile key, so match
+    # that part (before the last @) case-insensitively and the ref (after the
+    # last @) exactly; refuse an ambiguous match. Hashtable keys from
+    # ConvertFrom-Yaml may compare case-insensitively, so enumerate them.
     function Get-CaseSensitiveValue($Map, [string]$Key) {
         $hits = @($Map.Keys | Where-Object { $_ -ceq $Key })
         if ($hits.Count -gt 1) { throw "ambiguous key: $Key" }
+        if ($hits.Count -eq 0) { return $null }
+        return $Map[$hits[0]]
+    }
+
+    function Get-LockValue($Map, [string]$Uses) {
+        $at = $Uses.LastIndexOf('@')
+        $name = $Uses.Substring(0, $at)
+        $ref = $Uses.Substring($at + 1)
+        $hits = @($Map.Keys | Where-Object {
+                $i = ([string]$_).LastIndexOf('@')
+                $i -ge 0 -and ([string]$_).Substring(0, $i) -ieq $name -and ([string]$_).Substring($i + 1) -ceq $ref
+            })
+        if ($hits.Count -gt 1) { throw "ambiguous key: $Uses" }
         if ($hits.Count -eq 0) { return $null }
         return $Map[$hits[0]]
     }
@@ -68,12 +82,14 @@ Describe 'actions.lock covers every third-party step uses' -Skip:$script:YamlMis
     }
 
     It '<Uses> in <File> is locked to a commit' -ForEach $script:LockCases {
-        $dep = Get-CaseSensitiveValue $script:Lock['dependencies'] $Uses
+        $dep = Get-LockValue $script:Lock['dependencies'] $Uses
         $dep | Should -Not -BeNullOrEmpty
         $dep['commit'] | Should -MatchExactly '^sha1-[0-9a-f]{40}$'
         $dep['ref'] | Should -BeExactly $Uses.Substring($Uses.LastIndexOf('@') + 1)
         $listed = @(Get-CaseSensitiveValue $script:Lock['workflows'] ".github/workflows/$File")
-        ($listed -ccontains $Uses) | Should -BeTrue -Because "actions.lock workflows entry for $File must list $Uses"
+        $ref = $Uses.Substring($Uses.LastIndexOf('@') + 1)
+        $hit = @($listed | Where-Object { $i = ([string]$_).LastIndexOf('@'); $i -ge 0 -and ([string]$_).Substring(0, $i) -ieq $Uses.Substring(0, $Uses.LastIndexOf('@')) -and ([string]$_).Substring($i + 1) -ceq $ref })
+        $hit.Count | Should -Be 1 -Because "actions.lock workflows entry for $File must list $Uses"
     }
 }
 
@@ -107,23 +123,12 @@ Describe 'Verify action lockfile step' -Skip:$script:YamlMissing {
         $script:VerifyStep.ContainsKey('continue-on-error') | Should -BeFalse
     }
 
-    It 'takes GH_TOKEN from github.token' {
-        $script:VerifyStep['env']['GH_TOKEN'] | Should -BeExactly '${{ github.token }}'
+    It 'uses the shared verify-actions-lock action at a release tag' {
+        $script:VerifyStep['uses'] | Should -MatchExactly '^Adam-S-Daniel/verify-actions-lock@v\d+\.\d+\.\d+$'
     }
 
-    It 'exits 1 on failure' {
-        (($script:VerifyStep['run'] -split "`n" | ForEach-Object { $_.Trim() }) -ccontains 'exit 1') | Should -BeTrue
-    }
-
-    It 'keeps the guard line: <Line>' -ForEach @(
-        @{ Line = 'set -euo pipefail' }
-        @{ Line = 'gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"' }
-        @{ Line = 'echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -' }
-        @{ Line = '(cd "$ext" && gh extension install .)' }
-        @{ Line = 'out=$(gh actions-lock --verify --no-interactive --json=valid,findings) || rc=$?' }
-        @{ Line = 'if [[ "$rc" -ne 0 ]] || ! jq -e ''.valid == true and ([.findings[] | select(.category != "cooldown-config-ignored")] | length) == 0'' <<<"$out" >/dev/null; then' }
-    ) {
-        (($script:VerifyStep['run'] -split "`n") -ccontains $Line) | Should -BeTrue -Because "the verify step must keep: $Line"
+    It 'has no if, so the job runs it on every pull request' {
+        $script:VerifyStep.ContainsKey('if') | Should -BeFalse
     }
 }
 

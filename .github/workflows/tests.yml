@@ -134,34 +134,7 @@ jobs:
           echo "salient change check: run=${run}"
 
       - name: Verify action lockfile
-        if: steps.salient.outputs.run == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ext="$RUNNER_TEMP/gh-actions-lock"
-          mkdir -p "$ext"
-          gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"
-          echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -
-          chmod +x "$ext/gh-actions-lock"
-          (cd "$ext" && gh extension install .)
-          rc=0
-          out=$(gh actions-lock --verify --no-interactive --json=valid,findings) || rc=$?
-          # v0.2.0 exits 0 with a reachability-unknown finding when the API fails; fail on any finding
-          # except cooldown-config-ignored, which reports dependabot.yml's cooldown exclude, not a pin.
-          if [[ "$rc" -ne 0 ]] || ! jq -e '.valid == true and ([.findings[] | select(.category != "cooldown-config-ignored")] | length) == 0' <<<"$out" >/dev/null; then
-            # Escape %, CR and LF so finding text cannot start a new workflow command.
-            if jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
-              jq -r 'def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"); .findings[]? | select(.category != "cooldown-config-ignored") | "::error::actions.lock \(.category | esc): \(.dependency // .workflow // "-" | esc): \(.detail | esc)"' <<<"$out"
-            else
-              echo '::error::gh actions-lock --verify returned no readable JSON.'
-            fi
-            if jq -e 'any(.findings[]?; .category == "reachability-unknown")' <<<"$out" >/dev/null 2>&1; then
-              echo '::error::reachability-unknown means the GitHub API was unreachable; re-run once it is back.'
-            fi
-            echo "::error::gh actions-lock --verify failed (exit $rc)."
-            exit 1
-          fi
+        uses: Adam-S-Daniel/verify-actions-lock@v1.0.0
 
       # act-only: the default act runner image has no pwsh; GitHub-hosted
       # ubuntu-latest already does, so this is skipped on real runs.
