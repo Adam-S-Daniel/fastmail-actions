@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 2
 
@@ -131,6 +131,36 @@ jobs:
           echo "run=${run}" >> "$GITHUB_OUTPUT"
           echo "salient change check: run=${run}"
 
+      - name: Verify action lockfile
+        if: steps.salient.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ext="$RUNNER_TEMP/gh-actions-lock"
+          mkdir -p "$ext"
+          gh release download v0.2.0 -R github/gh-actions-lock -p linux-amd64 -O "$ext/gh-actions-lock"
+          echo "79ec84c191667fd935a277e6fd3662cf5d3669cccc9e99998731d8f306f373b6  $ext/gh-actions-lock" | sha256sum -c -
+          chmod +x "$ext/gh-actions-lock"
+          (cd "$ext" && gh extension install .)
+          rc=0
+          out=$(gh actions-lock --verify --no-interactive --json=valid,findings) || rc=$?
+          # v0.2.0 exits 0 with a reachability-unknown finding when the API fails; fail on any finding
+          # except cooldown-config-ignored, which reports dependabot.yml's cooldown exclude, not a pin.
+          if [[ "$rc" -ne 0 ]] || ! jq -e '.valid == true and ([.findings[] | select(.category != "cooldown-config-ignored")] | length) == 0' <<<"$out" >/dev/null; then
+            # Escape %, CR and LF so finding text cannot start a new workflow command.
+            if jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
+              jq -r 'def esc: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"); .findings[]? | select(.category != "cooldown-config-ignored") | "::error::actions.lock \(.category | esc): \(.dependency // .workflow // "-" | esc): \(.detail | esc)"' <<<"$out"
+            else
+              echo '::error::gh actions-lock --verify returned no readable JSON.'
+            fi
+            if jq -e 'any(.findings[]?; .category == "reachability-unknown")' <<<"$out" >/dev/null 2>&1; then
+              echo '::error::reachability-unknown means the GitHub API was unreachable; re-run once it is back.'
+            fi
+            echo "::error::gh actions-lock --verify failed (exit $rc)."
+            exit 1
+          fi
+
       # act-only: the default act runner image has no pwsh; GitHub-hosted
       # ubuntu-latest already does, so this is skipped on real runs.
       - name: Ensure PowerShell (act only)
@@ -152,6 +182,13 @@ jobs:
           Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck
           (Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1).Version.ToString()
 
+      # WorkflowPins.Tests.ps1 parses workflow YAML; Pester has no YAML parser.
+      - name: Install powershell-yaml
+        if: steps.salient.outputs.run == 'true'
+        shell: pwsh
+        run: |
+          Install-Module -Name powershell-yaml -RequiredVersion 0.4.12 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
+
       - name: Run Pester (mock mode)
         if: steps.salient.outputs.run == 'true'
         shell: pwsh
@@ -168,7 +205,7 @@ jobs:
 
       - name: Upload test results
         if: always() && steps.salient.outputs.run == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: pester-results
           path: testResults.xml
