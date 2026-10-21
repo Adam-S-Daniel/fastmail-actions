@@ -1,0 +1,30 @@
+# Delivered once by _agent-guidance's sync (templates/agent-checks/, ADR 0021)
+# and never overwritten afterwards, so Dependabot can keep its pin current.
+#
+# Runs .githooks/agent-checks, the same file the local git hooks run, over every
+# commit this change adds. The local hooks are early feedback and can be
+# skipped with --no-verify; this check is the one that cannot be.
+name: agent-checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run the commit-time checks over this change
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .githooks/agent-checks ci "$BASE" "$HEAD_SHA"

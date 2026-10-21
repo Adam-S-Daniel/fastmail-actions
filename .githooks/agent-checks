@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# agent-checks: the fleet's commit-time rules, run by local git hooks and by CI.
+#
+# Locally it runs from config-based git hooks (Git 2.54+) that
+# adam-agentskills' scripts/install-agent-hooks.sh installs once per machine.
+# CI runs the same file over a pull request's commits, and CI is the
+# enforcement: a hook can be skipped with --no-verify, a required check
+# cannot. See adam-agentskills ADR 0020 and _agent-guidance ADR 0021.
+#
+# Managed by _agent-guidance (templates/agent-checks/). The sync overwrites
+# this file in every fleet repo, so change it there, not here.
+#
+# Usage:
+#   agent-checks pre-commit
+#   agent-checks pre-push <remote> <url>     (git's ref lines on stdin)
+#   agent-checks ci <base> <head>
+#
+# Any other event exits 0, so a machine whose installer registers an event
+# before this repo's copy of the runner knows it never blocks a commit.
+#
+# Each refusal says what is wrong, why, and how to fix it. That message is the
+# rule's documentation: an agent learns it when it breaks it, so the rule does
+# not need to sit in always-on guidance.
+set -u
+
+failed=0
+problem() {
+  printf 'agent-checks: %s\n' "$*" >&2
+  failed=1
+}
+
+# Reads NUL-separated paths on stdin and refuses the ones that must never be
+# committed.
+check_paths() {
+  local path
+  while IFS= read -r -d '' path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      .claude/rules/*)
+        problem "$path: path-scoped rules (.claude/rules/) are not used in this fleet. Only Claude Code reads them. Put the rule in AGENTS.md or a skill, or make it a check in .githooks/agent-checks." ;;
+    esac
+    case "${path##*/}" in
+      .env.example|.env.sample|.env.template) ;;
+      .env|.env.*|*.pem|*.key|*.p12|*.pfx|id_rsa|id_ecdsa|id_ed25519)
+        problem "$path: looks like a secret or credential file, and git history in a public repo is public. Unstage it (git restore --staged -- '$path') and add it to .gitignore." ;;
+    esac
+  done
+}
+
+# Paths added or changed by any commit in a range, so a file added and then
+# deleted inside the range is still caught: it stays in the history.
+paths_in_range() {
+  git log --format= --name-only -z --diff-filter=ACMR "$@"
+}
+
+default_branch() {
+  local remote=$1 head
+  head=$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null) || head=""
+  if [ -n "$head" ]; then
+    printf '%s\n' "${head#"$remote"/}"
+  else
+    printf '%s\n' main master
+  fi
+}
+
+# git writes an all-zero object id for "no commit" (a new branch, a delete),
+# 40 digits under SHA-1 and 64 under SHA-256.
+is_zero() {
+  case "$1" in
+    ''|*[!0]*) return 1 ;;
+  esac
+}
+
+# Usable as a range base: a real commit this clone has.
+known_commit() {
+  [ -n "$1" ] && ! is_zero "$1" && git cat-file -e "$1^{commit}" 2>/dev/null
+}
+
+event=${1:-}
+case "$event" in
+  pre-commit)
+    check_paths < <(git diff --cached --name-only -z --diff-filter=ACMR)
+    ;;
+
+  pre-push)
+    remote=${2:-origin}
+    if ! git diff --cached --quiet; then
+      problem "the index has staged changes that are in no commit. If your last 'git commit' was refused by a hook, this push would publish the commit before it and report success. Commit or unstage them first (git status), then push."
+    fi
+    defaults=$(default_branch "$remote")
+    while read -r _ local_oid remote_ref remote_oid; do
+      [ -n "${remote_ref:-}" ] || continue
+      for branch in $defaults; do
+        if [ "$remote_ref" = "refs/heads/$branch" ]; then
+          problem "refusing to push to $branch: fleet default branches take changes only through pull requests, and GitHub would reject it (GH013). Push a feature branch and open a PR."
+        fi
+      done
+      is_zero "$local_oid" && continue
+      if known_commit "$remote_oid"; then
+        check_paths < <(paths_in_range "$remote_oid..$local_oid")
+      else
+        check_paths < <(paths_in_range "$local_oid" --not --remotes="$remote")
+      fi
+    done
+    ;;
+
+  ci)
+    base=${2:-}
+    head=${3:-HEAD}
+    if known_commit "$base"; then
+      check_paths < <(paths_in_range "$base..$head")
+    else
+      check_paths < <(paths_in_range -1 "$head")
+    fi
+    ;;
+
+  *)
+    exit 0
+    ;;
+esac
+
+if [ "$failed" -ne 0 ]; then
+  printf '%s\n' "agent-checks: fix the cause rather than skipping the hook (--no-verify); CI runs the same checks. If a check is wrong, say so to Adam." >&2
+  exit 1
+fi
+exit 0
