@@ -125,6 +125,14 @@ Describe 'JMAP + reporting (mock mode)' {
         ($r | Where-Object Address -eq 'brand-new@example.net').Status | Should -Be 'added'
     }
 
+    It 'reports the rejected property and reason when an add fails' {
+        $s = New-JmapSession -Token (Get-FastmailToken)
+        $r = Add-FastmailIdentity -Session $s -Addresses @('rejected-one@example.net') -Name 'X' -SentId 'mb-sent' -ExistingEmails @() -Apply
+        $f = $r | Where-Object Address -eq 'rejected-one@example.net'
+        $f.Status | Should -Be 'failed'
+        $f.Detail | Should -Be 'invalidProperties (email): mock rejection'
+    }
+
     It 'emails a report and records it to the outbox' {
         $outbox = Join-Path ([System.IO.Path]::GetTempPath()) ("outbox-{0}.jsonl" -f ([guid]::NewGuid().ToString('N')))
         $env:FASTMAIL_MOCK_OUTBOX = $outbox
