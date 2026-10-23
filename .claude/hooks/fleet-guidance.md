@@ -102,19 +102,10 @@ public repo.
   force-pushing — the one sanctioned force-push.
 - **Commit with the `…@users.noreply.github.com` identity** on public repos.
 
-## Network allowlists live in `_agent-guidance/docs/reference/`
+## Read before you start
 
-Two egress allowlists, reference copies with a `.CHANGELOG.md` sidecar;
-nothing loads them. Add a changelog entry when you change one.
-
-- `network-allowlist-claude-environments.txt` — in force for the Claude
-  Code cloud environment `My Whitelist`; the dialog at claude.ai/code is
-  authoritative.
-- `network-allowlist-github-runners.txt` — proposed for CI; unenforceable
-  on a standard runner (roadmap #821 closed).
-
-Traps: `*.example.com` does **not** match the apex `example.com`; the "also
-include default list…" checkbox adds ~200 domains.
+- **Settings schema design** (config keys, flags, fields): https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/reference/settings-schema-design.md
+- **Network allowlists** (editing either egress allowlist): https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/reference/network-allowlists.md
 
 ## Automation vs branch protection
 
