@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 2
 
@@ -93,8 +93,10 @@ jobs:
 
           # The pull_request checkout is GitHub's synthetic merge commit; its
           # first parent is the base branch tip, so diffing against HEAD^1
-          # gives exactly the files this PR changes.
-          if ! changed=$(git diff --name-only HEAD^1 HEAD 2>&1); then
+          # gives exactly the files this PR changes. --no-renames lists both
+          # sides of a rename, so moving a file out of a salient path still
+          # counts as touching it.
+          if ! changed=$(git diff --no-renames --name-only HEAD^1 HEAD 2>&1); then
             first_line=$(printf '%s\n' "$changed" | head -n1)
             echo "::warning::could not diff the merge commit against its base (${first_line}); running the suite unconditionally"
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -131,6 +133,9 @@ jobs:
           echo "run=${run}" >> "$GITHUB_OUTPUT"
           echo "salient change check: run=${run}"
 
+      - name: Verify action lockfile
+        uses: Adam-S-Daniel/verify-actions-lock@v1.1.0
+
       # act-only: the default act runner image has no pwsh; GitHub-hosted
       # ubuntu-latest already does, so this is skipped on real runs.
       - name: Ensure PowerShell (act only)
@@ -152,6 +157,13 @@ jobs:
           Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck
           (Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1).Version.ToString()
 
+      # WorkflowPins.Tests.ps1 parses workflow YAML; Pester has no YAML parser.
+      - name: Install powershell-yaml
+        if: steps.salient.outputs.run == 'true'
+        shell: pwsh
+        run: |
+          Install-Module -Name powershell-yaml -RequiredVersion 0.4.12 -Repository PSGallery -Scope CurrentUser -Force -ErrorAction Stop
+
       - name: Run Pester (mock mode)
         if: steps.salient.outputs.run == 'true'
         shell: pwsh
@@ -168,7 +180,7 @@ jobs:
 
       - name: Upload test results
         if: always() && steps.salient.outputs.run == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: pester-results
           path: testResults.xml

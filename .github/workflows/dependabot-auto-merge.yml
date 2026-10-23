@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -78,22 +78,28 @@ jobs:
         # Validates the PR genuinely came from Dependabot (defence in depth —
         # the job-level `if:` above already gates on the actor).
         id: metadata
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98
+        uses: dependabot/fetch-metadata@v3.1.0
 
       - name: Verify only manifest paths changed
         id: paths
         # Path allowlist: dependency manifests/lockfiles (any directory) plus
-        # workflow YAML. Dependabot never touches anything else, so a diff
+        # workflow YAML and the workflow action lockfile
+        # (.github/workflows/actions.lock, which Dependabot rewrites alongside
+        # each action bump). Dependabot never touches anything else, so a diff
         # outside this list means either a misconfiguration or a tampered
         # branch — either way, refuse to auto-merge. Inline port of
         # cms-platform's scripts/check-dependabot-manifest-paths.sh; keep in
         # lockstep with the identical block in job `sweep` below.
+        #
+        # `--no-renames` on both diffs: with rename detection on, `--name-only`
+        # prints only a rename's new name, so a non-manifest file renamed
+        # into an allowed path would be deleted unseen by this allowlist.
         run: |
           set -euo pipefail
           BASE="origin/${{ github.event.pull_request.base.ref }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
 
-          mapfile -t CHANGED < <(git diff --name-only "$BASE"..."$HEAD")
+          mapfile -t CHANGED < <(git diff --no-renames --name-only "$BASE"..."$HEAD")
           echo "Files changed (${BASE}...${HEAD}):"
           printf '  %s\n' "${CHANGED[@]}"
 
@@ -105,6 +111,7 @@ jobs:
               pyproject.toml|*/pyproject.toml|poetry.lock|*/poetry.lock) ;;
               requirements*.txt|*/requirements*.txt) ;;
               .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+              .github/workflows/actions.lock) ;;
               *)
                 echo "::error file=$f::Dependabot PR touches non-manifest path: $f"
                 REJECT=1
@@ -146,7 +153,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -299,7 +306,7 @@ jobs:
             # Re-run the SAME inline manifest-path allowlist as job
             # `auto-merge` above — keep the two blocks in lockstep.
             REJECT=0
-            mapfile -t CHANGED < <(git diff --name-only "origin/${base}...dependabot-sweep/pr-${num}")
+            mapfile -t CHANGED < <(git diff --no-renames --name-only "origin/${base}...dependabot-sweep/pr-${num}")
             for f in "${CHANGED[@]}"; do
               case "$f" in
                 package.json|*/package.json|package-lock.json|*/package-lock.json) ;;
@@ -307,6 +314,7 @@ jobs:
                 pyproject.toml|*/pyproject.toml|poetry.lock|*/poetry.lock) ;;
                 requirements*.txt|*/requirements*.txt) ;;
                 .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+                .github/workflows/actions.lock) ;;
                 *)
                   echo "::warning::#${num} touches non-manifest path on re-check: $f"
                   REJECT=1

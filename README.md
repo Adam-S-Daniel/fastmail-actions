@@ -240,15 +240,19 @@ version, so it's not listed here.)
   address).
 - **Mock fixture uses only reserved `example.*` domains** — never a real address —
   so CI logs of the mock-mode tests reveal nothing.
-- **Third-party actions are pinned to full-length commit SHAs** — never a tag or
-  branch, which are movable pointers whoever controls the upstream repo can
-  repoint at their own code. The SHA carries no trailing version comment: such a
-  label goes stale silently and then misstates the pin. Resolve a pin's version
-  from the SHA when you need it (`git ls-remote <url> | grep <sha>`).
-  The one exception is a reusable workflow from a repo this account owns —
-  `scheduled-run-health.yml` calls `Adam-S-Daniel/cms-platform/...@v0.1.87`, and
-  that tag is deliberate: it is the platform's release identity, moved in
-  lockstep by its bump tooling. Do not "fix" it to a SHA.
+- **Third-party actions are pinned through a lockfile.** Each step `uses:` names
+  an exact release tag (never a branch or a floating major), and
+  [`.github/workflows/actions.lock`](.github/workflows/actions.lock) locks that
+  tag to a full commit SHA; the runner runs the locked commit even if someone
+  repoints the tag upstream. The `pester` job's "Verify action lockfile" step runs
+  `gh actions-lock --verify` and fails the build on a missing, stale or moved
+  pin. Dependabot bumps the tag and its lockfile entry in one PR. Pins carry no
+  trailing version comment. Cross-repo reusable workflows are not covered by
+  the lockfile, so they keep a full commit SHA — except a reusable workflow from
+  a repo this account owns: `scheduled-run-health.yml` calls
+  `Adam-S-Daniel/cms-platform/...` at a release tag (`@vX.Y.Z`), and that tag is
+  deliberate: it is the platform's release identity, moved in lockstep by its
+  bump tooling. Do not "fix" it to a SHA.
 - `permissions: contents: read` — the workflows need no write scopes; the
   `GITHUB_TOKEN` cannot push, comment, or alter the repo.
 - The session GET disallows redirects and refuses a non-HTTPS `apiUrl`, so the
