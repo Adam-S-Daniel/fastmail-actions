@@ -37,10 +37,8 @@ under 25 KiB; Codex silently cuts a full-mode AGENTS.md at 32 KiB.
 ## Anything you name gets its link
 
 Any noun the reader might open gets its URL in the same sentence:
-**what you hand over** (jodidaniel.com#176: three turns of "waiting on a
-human approval", no location), **what YOU are waiting on** (every time you
-name it), **what you cite as DONE** (2026-08-29: "documented in the issue, the
-changelog" — no links).
+**what you hand over** (jodidaniel.com#176), **what YOU are waiting on**
+(every time you name it), **what you cite as DONE** (2026-08-29).
 
 - **Link the surface that decides, not its parent.** A required environment
   review lives on its job page, `.../actions/runs/<run_id>/job/<job_id>`, not
@@ -158,25 +156,35 @@ Fleet repos are PR-only on the default branch via ruleset, managed in
 `get_me` cannot tell the two GitHub MCP servers apart; establish which you
 hold before writing.
 
-- **`mcp__github__*` — session-provisioned**, not in `ListConnectors`. The
+- **`mcp__github__*` — session-provisioned**, not in `ListConnectors`; the
   only one with Actions tools (`actions_*`), job logs (`get_job_logs`),
   auto-merge and review-thread resolution. Reach: the attached repos.
-- **`github-mcp` — the claude.ai org connector**, listed by
-  `ListConnectors`; its tool prefix varies by surface. A strict subset:
-  same reads and PR/issue/merge/push/delete writes; no Actions, job logs,
-  auto-merge or review threads. Reach: a GitHub App allowlist INDEPENDENT of the
+- **`github-mcp` — the claude.ai org connector**, in `ListConnectors`, tool
+  prefix varying by surface: the same reads and PR/issue/merge/push/delete
+  writes, none of those four. Reach: a GitHub App allowlist INDEPENDENT of the
   attached repos. **Probe for it by connector NAME, never a remembered
-  prefix** (`mcp__b26ebb34-…__*` until 2026-08-28). It CAN check a PR —
-  `pull_request_read` with `method: "get_check_runs"` and `"get_status"`;
-  read BOTH (#83: `get_status` `pending` while every check run was green) —
-  but cannot dispatch or read a workflow RUN, and a merge under it is
-  synchronous (no `enable_pr_auto_merge`).
+  prefix**. It checks a PR with `pull_request_read` `method:
+  "get_check_runs"` and `"get_status"`; read BOTH (#83: `get_status`
+  `pending` while every check run was green). It cannot dispatch or read a
+  workflow RUN; its merge is synchronous.
 - **Fewer tools is not less dangerous.** Both merge, push and delete; the
   subset's reach cannot be inferred from the session's repo list (2026-08-19:
   `github-mcp` 404s on private `repo-settings`).
 
 Prefer `mcp__github__`; use `github-mcp` only when the other cannot see a
 repo, say so, and name the connector in each verification.
+
+## Agent-made GitHub contributions carry a marker
+
+They post as Adam
+([ADR 0023](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/decisions/0023-mark-agent-contributions.md)),
+so each PR or issue body, comment, review or reply ends with
+`<sub>🤖 Written by <agent> on behalf of @Adam-S-Daniel</sub>`
+(`Claude Code`/`Codex`); a PR or issue you open gets `agent-authored`;
+commits keep `Co-Authored-By:` and add `Agent: claude-code`/`codex`.
+Explain a merge, close or label change in a marked comment.
+**Never submit an APPROVE review**: it cannot be marked. The
+`github-write-marker.sh` hook enforces it.
 
 ## A GitHub 404 means "not authorized", not "not there"
 
@@ -210,9 +218,8 @@ had no `skills.lock`).
 - **Your session's reach is not the fleet's shape** — it is per-session and
   may miss an owner; "I cannot see it" and "it does not exist" differ.
 - **The DENOMINATOR is the part that lies.** Enumerating local checkouts
-  errs both ways (2026-08-29: three DELETED repos counted, a live consumer
-  missed — `ALL PROPAGATED` over 17 of 18, false GREEN; issue #37). Take it
-  from a registry or the remote, never the disk, and say which.
+  errs both ways (issue #37: three deleted repos counted, a live one missed).
+  Take it from a registry or the remote, never the disk, and say which.
 
 ## "The watch finished" is not "CI passed"
 
@@ -307,18 +314,15 @@ composite actions and reusable-workflow refs alike; never a tag, branch or
 abbreviated SHA.
 
 - **A pin carries NO trailing version comment.** Nothing maintains it, so it
-  lies (2026-08-20: Dependabot left stale comments beside moved SHAs in
-  GHA-bench#52 and skills-evals #38/#39/#40). Resolve one with
+  lies (2026-08-20, GHA-bench#52). Resolve one with
   `git ls-remote <url> | grep <sha>`.
 - **Wait 7 days after a third-party release**, else pin the previous.
 - **Dereference annotated tags.** `gh api .../git/ref/tags/<tag>` with
   `.object.type == "tag"` gives the tag object's SHA, which fails at runtime;
   use `git ls-remote <url> 'refs/tags/<tag>^{}'`.
 - **The one carve-out: a ref into this account's own `cms-platform` stays on
-  its release tag, in both shapes** — reusable workflow
-  `Adam-S-Daniel/cms-platform/.github/workflows/<x>.yml@v0.1.88` and composite
-  action `Adam-S-Daniel/cms-platform/.github/actions/<x>@v0.1.88` —
-  because `check-platform-pin-consistency.js` asserts each equals
+  its release tag** (`…@v0.1.88`), reusable workflow and composite action
+  alike, because `check-platform-pin-consistency.js` asserts each equals
   `platform.lock`'s `platform_ref`.
 - `./local/path` and `docker://` refs have nothing to pin.
 
@@ -367,8 +371,8 @@ reusable-workflow ref is for review to catch.
   `git checkout -- <file>` discards your edits. Wait for a clean `git status`
   plus a recorded result; decline a stop hook's "commit and push" nudge.
 - **A subagent that has REPORTED can still be holding the tree**: its
-  BACKGROUND CHILDREN are not reaped (2026-08-29: an orphan test loop turned
-  a 999/0 tree into 985/14). Look for descendants before trusting a long run
+  BACKGROUND CHILDREN are not reaped (2026-08-29: a 999/0 tree read
+  985/14). Look for descendants before trusting a long run
   (`ps -eo pid,etimes,cmd | grep '[y]our-command'`); `md5sum` inputs before
   and after (differ → not evidence); prefer a per-run output path; kill
   orphans, and say so.
@@ -428,18 +432,17 @@ Then say it once, naming the snippet's home (adam-agentskills'
 `docs/multi-repo-delivery.md`; do not paraphrase it), and drop it.
 
 **Durable machine — ACT, then one line.** `claude plugin marketplace list
---json` returns `[]` when nothing is configured: absent → `claude plugin
-marketplace add Adam-S-Daniel/adam-agentskills` and install the plugins wanted;
+--json` is `[]` when nothing is configured: absent → `claude plugin
+marketplace add Adam-S-Daniel/adam-agentskills`, install the plugins wanted;
 marketplace behind → `claude plugin marketplace update adam-agentskills`;
-install behind → below; both current → silence.
-Use CLI ≥ 2.1.280 for recorded commits (older updates kept stale SHAs).
-After refreshing the clone (`installLocation`), compare each `gitCommitSha`
-in `~/.claude/plugins/installed_plugins.json` with `git -C <clone> rev-parse HEAD`:
-equal is current, different needs inspection, missing is unknown. Locate the
-bundle via `installPath`; a marketplace refresh does not update it.
-The clone is `--depth 1`, so ancestry/count checks may exit 128.
-Try `claude plugin update`, then recheck; if still stale, uninstall/reinstall
-(registry ADR 0009's version-gate case). Updates load next session. Neither
+install behind → below; both current → silence. Use CLI ≥ 2.1.280 (older
+updates kept stale SHAs). After refreshing the clone (`installLocation`),
+compare each `gitCommitSha` in `~/.claude/plugins/installed_plugins.json` with
+`git -C <clone> rev-parse HEAD`: equal is current, different needs inspection,
+missing is unknown. The bundle is at `installPath`, which a marketplace
+refresh does not update; the clone is `--depth 1`, so ancestry checks may
+exit 128. Try `claude plugin update` and recheck; still stale →
+uninstall/reinstall (registry ADR 0009). Updates load next session. Neither
 belongs in a repo's `AGENTS.md`.
 
 ## Git practices
