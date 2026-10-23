@@ -38,7 +38,7 @@ updates:
     # 3-day minimum age, so `default-days: 7` here is a deliberate RAISE, not
     # a floor from zero — it mechanises this account's standing 7-day
     # cooling-off convention for third-party action releases (pinned through
-    # .github/workflows/actions.lock per _agent-guidance ADR 0021), matching
+    # .github/workflows/actions.lock per _agent-guidance ADR 0024), matching
     # cms-platform's own .github/dependabot.yml.
     #
     # NO semver-major-days (and no semver-minor-days / semver-patch-days

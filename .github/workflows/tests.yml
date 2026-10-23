@@ -134,7 +134,7 @@ jobs:
           echo "salient change check: run=${run}"
 
       - name: Verify action lockfile
-        uses: Adam-S-Daniel/verify-actions-lock@v1.0.0
+        uses: Adam-S-Daniel/verify-actions-lock@v1.1.0
 
       # act-only: the default act runner image has no pwsh; GitHub-hosted
       # ubuntu-latest already does, so this is skipped on real runs.
