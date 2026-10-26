@@ -227,13 +227,21 @@ function Invoke-JmapMock {
             'Identity/set' {
                 $create = Get-Prop $callArgs 'create'
                 $created = @{}
+                $notCreated = @{}
                 if ($create) {
                     $keys = if ($create -is [System.Collections.IDictionary]) { $create.Keys } else { $create.PSObject.Properties.Name }
                     foreach ($k in $keys) {
-                        $created[$k] = @{ id = "mock-id-$k"; verificationState = 'autoverified' }
+                        # An address starting "rejected-" fails the way the live server
+                        # rejects one, so tests can check what a failure reports.
+                        $addr = [string](Get-Prop (Get-Prop $create $k) 'email')
+                        if ($addr -like 'rejected-*') {
+                            $notCreated[$k] = @{ type = 'invalidProperties'; properties = @('email'); description = 'mock rejection' }
+                        } else {
+                            $created[$k] = @{ id = "mock-id-$k"; verificationState = 'autoverified' }
+                        }
                     }
                 }
-                $responses += , @($name, @{ accountId = $Session.AccountId; created = $created; notCreated = @{} }, $callId)
+                $responses += , @($name, @{ accountId = $Session.AccountId; created = $created; notCreated = $notCreated }, $callId)
             }
             'Email/set' {
                 $create = Get-Prop $callArgs 'create'
@@ -527,7 +535,14 @@ function Add-FastmailIdentity {
             } elseif (Test-HasKey $notCreated $k) {
                 $err = Get-Prop $notCreated $k
                 $type = Get-Prop $err 'type'; if (-not $type) { $type = 'unknown error' }
-                $results += [pscustomobject]@{ Address = $email; Status = 'failed'; Detail = $type }
+                # Keep Fastmail's reason, not just the type: invalidProperties alone
+                # does not say which property was rejected or why.
+                $detail = $type
+                $props = @(@(Get-Prop $err 'properties') | Where-Object { $_ })
+                if ($props.Count -gt 0) { $detail += " ($($props -join ', '))" }
+                $desc = Get-Prop $err 'description'
+                if ($desc) { $detail += ": $desc" }
+                $results += [pscustomobject]@{ Address = $email; Status = 'failed'; Detail = $detail }
             } else {
                 $results += [pscustomobject]@{ Address = $email; Status = 'failed'; Detail = 'no result returned' }
             }
