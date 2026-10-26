@@ -181,7 +181,13 @@ case "$event" in
           problem "refusing to push to $branch: fleet default branches take changes only through pull requests, and GitHub would reject it (GH013). Push a feature branch and open a PR."
         fi
       done
-      is_zero "$local_oid" && continue
+      if is_zero "$local_oid"; then
+        case "$remote_ref" in
+          refs/heads/persistent/*)
+            problem "refusing to delete ${remote_ref#refs/heads/}: persistent/* branches outlive their PRs and hold data (results, usage records), and deleting one loses it. Private repos without rulesets have nothing else to stop this. If it really must go, ask Adam." ;;
+        esac
+        continue
+      fi
       content_rev=$local_oid
       if known_commit "$remote_oid"; then
         run_checks < <(paths_in_range "$remote_oid..$local_oid")
