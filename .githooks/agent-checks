@@ -14,9 +14,16 @@
 #   agent-checks pre-commit
 #   agent-checks pre-push <remote> <url>     (git's ref lines on stdin)
 #   agent-checks ci <base> <head>
+#   agent-checks tree [<rev>]                (every path in <rev>, default HEAD)
+#
+# `tree` is for measuring a check against a repo's whole current tree, so a new
+# check can be shown to refuse nothing already on a fleet repo's main.
 #
 # Any other event exits 0, so a machine whose installer registers an event
 # before this repo's copy of the runner knows it never blocks a commit.
+#
+# A repo adds checks of its own in .agent-checks/local.sh (see
+# run_local_checks below), outside .githooks/ because this file is overwritten.
 #
 # Each refusal says what is wrong, why, and how to fix it. That message is the
 # rule's documentation: an agent learns it when it breaks it, so the rule does
@@ -27,6 +34,37 @@ failed=0
 problem() {
   printf 'agent-checks: %s\n' "$*" >&2
   failed=1
+}
+
+# Which commit's content the checks read: "index" for pre-commit, else the
+# revision being checked (pre-push: the pushed ref's commit; ci: the head;
+# tree: the revision named). Set by each event before it calls check_paths.
+content_rev=index
+
+# file_content <path> — print the blob for <path> in the content being
+# checked. Prints nothing, and succeeds, when that content has no such blob.
+file_content() {
+  local spec
+  if [ "$content_rev" = index ]; then
+    spec=":$1"
+  else
+    spec="$content_rev:$1"
+  fi
+  git cat-file -e "$spec" 2>/dev/null || return 0
+  git cat-file blob "$spec"
+}
+
+# ── Lesson checks ────────────────────────────────────────────────────────────
+# check_lessons <path> — called once for every path check_paths sees.
+#
+# The lesson-check lane (the fleet worker, _agent-guidance ADR 0027) adds
+# `case` arms here, one per lesson an agent learned, each with a refusal
+# through `problem` that says what is wrong, why, and how to fix it, and a
+# trailing `# lesson: <id>` comment. Read a file's content with file_content.
+# A refusal names the path and the rule only; it never prints file content,
+# which could be a secret.
+check_lessons() {
+  :
 }
 
 # Reads NUL-separated paths on stdin and refuses the ones that must never be
@@ -44,7 +82,54 @@ check_paths() {
       .env|.env.*|*.pem|*.key|*.p12|*.pfx|id_rsa|id_ecdsa|id_ed25519)
         problem "$path: looks like a secret or credential file, and git history in a public repo is public. Unstage it (git restore --staged -- '$path') and add it to .gitignore." ;;
     esac
+    check_lessons "$path" < /dev/null
   done
+}
+
+# ── Repo-local checks ────────────────────────────────────────────────────────
+# A repo's own rules live in .agent-checks/local.sh, which the sync never
+# touches. After the fleet checks, the runner starts it as a separate process,
+# `bash .agent-checks/local.sh <event>`, with the same NUL-separated path list
+# on stdin and AGENT_CHECKS_REV set to the commit being checked (empty for the
+# index), so it can read content with `git show "$AGENT_CHECKS_REV:<path>"`
+# (`git show ":<path>"` when empty). Its stderr passes through; a nonzero exit
+# refuses. It is a child, not sourced, so it can only add refusals: it cannot
+# skip, change or clear a fleet check. A symlink is not run.
+#
+# How to add one: commit .agent-checks/local.sh with LF line endings (add
+# `.agent-checks/* text eol=lf` to .gitattributes; bash fails on CRLF). Exit 0
+# to allow, nonzero to refuse, after printing on stderr what is wrong, why and
+# how to fix it; name the path, never print file content. Every event runs it,
+# so test it with `bash .githooks/agent-checks tree`. Example:
+#
+#   status=0
+#   while IFS= read -r -d '' path; do
+#     case "$path" in *.draft) echo "agent-checks (local): $path: drafts stay out of this repo. Move it to your notes." >&2; status=1 ;; esac
+#   done
+#   exit $status
+local_checks=.agent-checks/local.sh
+
+run_local_checks() {
+  local top rev rc=0
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -f "$top/$local_checks" ] && [ ! -L "$top/$local_checks" ] || return 0
+  rev=$content_rev
+  [ "$rev" = index ] && rev=""
+  (cd "$top" && AGENT_CHECKS_REV=$rev bash "$local_checks" "$event") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    problem "$local_checks (this repo's own checks) refused, exit $rc; its messages are above. Fix the cause, or fix the check in $local_checks if it is wrong."
+  fi
+}
+
+# run_checks — the fleet checks, then the repo's own, over the same
+# NUL-separated path list on stdin.
+run_checks() {
+  local list
+  list=$(mktemp) || { problem "could not create a temp file, so nothing was checked."; return; }
+  cat > "$list"
+  check_paths < "$list"
+  run_local_checks < "$list"
+  rm -f "$list"
 }
 
 # Paths added or changed by any commit in a range, so a file added and then
@@ -79,7 +164,8 @@ known_commit() {
 event=${1:-}
 case "$event" in
   pre-commit)
-    check_paths < <(git diff --cached --name-only -z --diff-filter=ACMR)
+    content_rev=index
+    run_checks < <(git diff --cached --name-only -z --diff-filter=ACMR)
     ;;
 
   pre-push)
@@ -96,10 +182,11 @@ case "$event" in
         fi
       done
       is_zero "$local_oid" && continue
+      content_rev=$local_oid
       if known_commit "$remote_oid"; then
-        check_paths < <(paths_in_range "$remote_oid..$local_oid")
+        run_checks < <(paths_in_range "$remote_oid..$local_oid")
       else
-        check_paths < <(paths_in_range "$local_oid" --not --remotes="$remote")
+        run_checks < <(paths_in_range "$local_oid" --not --remotes="$remote")
       fi
     done
     ;;
@@ -107,10 +194,21 @@ case "$event" in
   ci)
     base=${2:-}
     head=${3:-HEAD}
+    content_rev=$head
     if known_commit "$base"; then
-      check_paths < <(paths_in_range "$base..$head")
+      run_checks < <(paths_in_range "$base..$head")
     else
-      check_paths < <(paths_in_range -1 "$head")
+      run_checks < <(paths_in_range -1 "$head")
+    fi
+    ;;
+
+  tree)
+    rev=${2:-HEAD}
+    if ! git rev-parse --verify --quiet "$rev^{tree}" > /dev/null; then
+      problem "tree: '$rev' is not a commit or tree in this repository, so nothing was checked. Name a revision that exists (git rev-parse --verify '$rev')."
+    else
+      content_rev=$rev
+      run_checks < <(git ls-tree -r -z --name-only "$rev")
     fi
     ;;
 
