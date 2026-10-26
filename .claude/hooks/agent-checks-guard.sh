@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # agent-checks-guard: a Claude Code PreToolUse hook that refuses the easy ways
-# to skip or switch off the fleet's commit-time git hooks (ADR 0021).
+# to skip or switch off the fleet's commit-time git hooks (ADR 0021), and the
+# deletion of a remote persistent/* branch.
 #
 # Refuses, with a message saying what to do instead:
 #   - `git commit` or `git push` with --no-verify, or `git commit -n`;
@@ -8,7 +9,10 @@
 #     `-c hook.<name>...`, `-c includeIf...`, or GIT_CONFIG_* variables;
 #   - `git config` writes to core.hooksPath, hook.* or includeIf.*;
 #   - deleting, moving or editing .githooks/ or the installed agent-hooks.inc,
-#     by a shell command or by an Edit/Write tool call.
+#     by a shell command or by an Edit/Write tool call;
+#   - deleting a persistent/* branch on a remote: `git push <remote> --delete`
+#     or `-d` naming one, a `:persistent/...` refspec, or
+#     `gh api -X DELETE .../git/refs/heads/persistent/...`.
 #
 # This stops habit, not intent: a determined agent can still get around a
 # string check. The required agent-checks CI check is the enforcement.
@@ -38,9 +42,71 @@ AFTER = ("Fix what the check reported instead. If the check itself is wrong, "
          "moves the failure later.")
 
 
-def block(what):
-    sys.stderr.write("agent-checks-guard: refused: " + what + ". " + AFTER + "\n")
+def block(what, after=AFTER):
+    sys.stderr.write("agent-checks-guard: refused: " + what + ". " + after + "\n")
     sys.exit(2)
+
+
+PERSISTENT_AFTER = ("persistent/* branches outlive their pull requests and hold data "
+                    "(results, accumulated state), and a private repo has no ruleset to "
+                    "stop the delete. If it must go, ask Adam.")
+PERSISTENT_REF = re.compile(r"^(refs/)?(heads/)?persistent/")
+PERSISTENT_API = re.compile(r"(^|/)repos/[^/]+/[^/]+/git/refs/heads/persistent/")
+PUSH_ARG_OPTS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
+
+
+def block_persistent(name):
+    block("deleting the remote branch " + name, PERSISTENT_AFTER)
+
+
+def check_gh_api(args):
+    method, endpoints, i = "GET", [], 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-X", "--method") and i + 1 < len(args):
+            method = args[i + 1]
+            i += 2
+            continue
+        if a.startswith("--method="):
+            method = a.split("=", 1)[1]
+        elif a.startswith("-X") and len(a) > 2:
+            method = a[2:]
+        elif not a.startswith("-"):
+            endpoints.append(a)
+        i += 1
+    if method.upper() != "DELETE":
+        return
+    for e in endpoints:
+        e = re.sub(r"%2[fF]", "/", e)
+        if PERSISTENT_API.search(e):
+            block_persistent(e.split("/git/refs/heads/", 1)[1])
+
+
+def check_push(args):
+    delete, positional, i = False, [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            positional.extend(args[i + 1:])
+            break
+        if a in PUSH_ARG_OPTS:
+            i += 2
+            continue
+        if a == "--delete" or (a.startswith("-") and not a.startswith("--") and "d" in a[1:]):
+            delete = True
+        elif not a.startswith("-"):
+            positional.append(a)
+        i += 1
+    for spec in positional[1:]:
+        spec = spec.lstrip("+")
+        if delete and ":" not in spec:
+            dst = spec
+        elif spec.startswith(":"):
+            dst = spec[1:]
+        else:
+            continue
+        if PERSISTENT_REF.match(dst):
+            block_persistent(dst)
 
 
 def protected(path):
@@ -125,6 +191,10 @@ for words in commands:
             if protected(w):
                 block("editing " + w + " in place")
 
+    if prog == "gh" and len(words) > 1 and words[1] == "api":
+        check_gh_api(words[2:])
+        continue
+
     if prog != "git":
         continue
 
@@ -144,6 +214,9 @@ for words in commands:
         i += 1
     sub = words[i] if i < len(words) else ""
     args = words[i + 1:]
+
+    if sub == "push":
+        check_push(args)
 
     if sub == "config":
         keys = [a for a in args if HOOK_KEY.match(a)]

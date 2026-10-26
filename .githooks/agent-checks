@@ -28,12 +28,41 @@
 # Each refusal says what is wrong, why, and how to fix it. That message is the
 # rule's documentation: an agent learns it when it breaks it, so the rule does
 # not need to sit in always-on guidance.
+#
+# Run log. Each pre-commit and pre-push run (never ci or tree) appends one JSON
+# line to $AGENT_CHECKS_LOG, by default
+# ${XDG_STATE_HOME:-$HOME/.local/state}/agent-checks/runs.jsonl, so a dashboard
+# can show how often each check runs and refuses, per repo, over time:
+#   {"v":1,"ts":"2026-10-26T12:00:00Z","event":"pre-commit","repo":"owner/name",
+#    "checks":["rules-dir","secret-file"],"failed":["secret-file"]}
+# `repo` is origin's GitHub owner/name, or null for any other remote. `checks`
+# are the ids of the checks that ran, `failed` the ones that refused. The line
+# holds no paths, messages, branch names or user names. AGENT_CHECKS_LOG=off
+# turns it off. Logging is best effort: a failure is silent and never changes
+# the exit code or the output.
 set -u
 
 failed=0
+# The ids of the checks that ran and of those that refused, space-separated,
+# each once, in order. An id is a fixed kebab-case literal.
+ran_ids=""
+failed_ids=""
+
+# note_ran <id> — record that the check <id> ran.
+note_ran() {
+  case "$1" in ''|*[!a-z0-9-]*) return 0 ;; esac
+  case " $ran_ids " in *" $1 "*) ;; *) ran_ids="$ran_ids $1" ;; esac
+}
+
+# problem <id> <message> — refuse: print the message, record the check's id.
 problem() {
+  local id=$1
+  shift
   printf 'agent-checks: %s\n' "$*" >&2
   failed=1
+  note_ran "$id"
+  case "$id" in ''|*[!a-z0-9-]*) return 0 ;; esac
+  case " $failed_ids " in *" $id "*) ;; *) failed_ids="$failed_ids $id" ;; esac
 }
 
 # Which commit's content the checks read: "index" for pre-commit, else the
@@ -63,6 +92,11 @@ file_content() {
 # trailing `# lesson: <id>` comment. Read a file's content with file_content.
 # A refusal names the path and the rule only; it never prints file content,
 # which could be a secret.
+#
+# Each arm refuses with `problem lesson-<id> "..."`, and lists that same
+# check id in lesson_checks, so the run log counts the check as run.
+lesson_checks=""
+
 check_lessons() {
   :
 }
@@ -75,12 +109,12 @@ check_paths() {
     [ -n "$path" ] || continue
     case "$path" in
       .claude/rules/*)
-        problem "$path: path-scoped rules (.claude/rules/) are not used in this fleet. Only Claude Code reads them. Put the rule in AGENTS.md or a skill, or make it a check in .githooks/agent-checks." ;;
+        problem rules-dir "$path: path-scoped rules (.claude/rules/) are not used in this fleet. Only Claude Code reads them. Put the rule in AGENTS.md or a skill, or make it a check in .githooks/agent-checks." ;;
     esac
     case "${path##*/}" in
       .env.example|.env.sample|.env.template) ;;
       .env|.env.*|*.pem|*.key|*.p12|*.pfx|id_rsa|id_ecdsa|id_ed25519)
-        problem "$path: looks like a secret or credential file, and git history in a public repo is public. Unstage it (git restore --staged -- '$path') and add it to .gitignore." ;;
+        problem secret-file "$path: looks like a secret or credential file, and git history in a public repo is public. Unstage it (git restore --staged -- '$path') and add it to .gitignore." ;;
     esac
     check_lessons "$path" < /dev/null
   done
@@ -113,19 +147,23 @@ run_local_checks() {
   local top rev rc=0
   top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
   [ -f "$top/$local_checks" ] && [ ! -L "$top/$local_checks" ] || return 0
+  note_ran repo-local
   rev=$content_rev
   [ "$rev" = index ] && rev=""
   (cd "$top" && AGENT_CHECKS_REV=$rev bash "$local_checks" "$event") || rc=$?
   if [ "$rc" -ne 0 ]; then
-    problem "$local_checks (this repo's own checks) refused, exit $rc; its messages are above. Fix the cause, or fix the check in $local_checks if it is wrong."
+    problem repo-local "$local_checks (this repo's own checks) refused, exit $rc; its messages are above. Fix the cause, or fix the check in $local_checks if it is wrong."
   fi
 }
 
 # run_checks — the fleet checks, then the repo's own, over the same
 # NUL-separated path list on stdin.
 run_checks() {
-  local list
-  list=$(mktemp) || { problem "could not create a temp file, so nothing was checked."; return; }
+  local list id
+  note_ran rules-dir
+  note_ran secret-file
+  for id in $lesson_checks; do note_ran "$id"; done
+  list=$(mktemp) || { problem runner-error "could not create a temp file, so nothing was checked."; return; }
   cat > "$list"
   check_paths < "$list"
   run_local_checks < "$list"
@@ -170,21 +208,24 @@ case "$event" in
 
   pre-push)
     remote=${2:-origin}
+    note_ran staged-index
+    note_ran push-to-default
+    note_ran persistent-delete
     if ! git diff --cached --quiet; then
-      problem "the index has staged changes that are in no commit. If your last 'git commit' was refused by a hook, this push would publish the commit before it and report success. Commit or unstage them first (git status), then push."
+      problem staged-index "the index has staged changes that are in no commit. If your last 'git commit' was refused by a hook, this push would publish the commit before it and report success. Commit or unstage them first (git status), then push."
     fi
     defaults=$(default_branch "$remote")
     while read -r _ local_oid remote_ref remote_oid; do
       [ -n "${remote_ref:-}" ] || continue
       for branch in $defaults; do
         if [ "$remote_ref" = "refs/heads/$branch" ]; then
-          problem "refusing to push to $branch: fleet default branches take changes only through pull requests, and GitHub would reject it (GH013). Push a feature branch and open a PR."
+          problem push-to-default "refusing to push to $branch: fleet default branches take changes only through pull requests, and GitHub would reject it (GH013). Push a feature branch and open a PR."
         fi
       done
       if is_zero "$local_oid"; then
         case "$remote_ref" in
           refs/heads/persistent/*)
-            problem "refusing to delete ${remote_ref#refs/heads/}: persistent/* branches outlive their PRs and hold data (results, usage records), and deleting one loses it. Private repos without rulesets have nothing else to stop this. If it really must go, ask Adam." ;;
+            problem persistent-delete "refusing to delete ${remote_ref#refs/heads/}: persistent/* branches outlive their PRs and hold data (results, usage records), and deleting one loses it. Private repos without rulesets have nothing else to stop this. If it really must go, ask Adam." ;;
         esac
         continue
       fi
@@ -211,7 +252,7 @@ case "$event" in
   tree)
     rev=${2:-HEAD}
     if ! git rev-parse --verify --quiet "$rev^{tree}" > /dev/null; then
-      problem "tree: '$rev' is not a commit or tree in this repository, so nothing was checked. Name a revision that exists (git rev-parse --verify '$rev')."
+      problem tree-rev "tree: '$rev' is not a commit or tree in this repository, so nothing was checked. Name a revision that exists (git rev-parse --verify '$rev')."
     else
       content_rev=$rev
       run_checks < <(git ls-tree -r -z --name-only "$rev")
@@ -221,6 +262,54 @@ case "$event" in
   *)
     exit 0
     ;;
+esac
+
+# ── Run log ──────────────────────────────────────────────────────────────────
+# json_ids <ids> — a JSON array of space-separated kebab-case ids.
+json_ids() {
+  local id out=""
+  for id in $1; do out="$out${out:+,}\"$id\""; done
+  printf '[%s]' "$out"
+}
+
+# origin_repo — origin's GitHub "owner/name" as a JSON string, or null.
+origin_repo() {
+  local url rest owner name ok=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-
+  url=$(git remote get-url origin 2>/dev/null) || url=""
+  case "$url" in
+    https://github.com/*) rest=${url#https://github.com/} ;;
+    git@github.com:*) rest=${url#git@github.com:} ;;
+    ssh://git@github.com/*) rest=${url#ssh://git@github.com/} ;;
+    *) rest="" ;;
+  esac
+  rest=${rest%.git}
+  owner=${rest%%/*}
+  name=${rest#*/}
+  case "$owner" in ''|*[!$ok]*) printf null; return ;; esac
+  case "$name" in ''|*[!$ok]*) printf null; return ;; esac
+  printf '"%s/%s"' "$owner" "$name"
+}
+
+log_run() {
+  local log=${AGENT_CHECKS_LOG:-} base ts line
+  [ "$log" = off ] && return 0
+  if [ -z "$log" ]; then
+    base=${XDG_STATE_HOME:-}
+    [ -n "$base" ] || { [ -n "${HOME:-}" ] && base=$HOME/.local/state; } || return 0
+    log=$base/agent-checks/runs.jsonl
+  fi
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || return 0
+  line=$(printf '{"v":1,"ts":"%s","event":"%s","repo":%s,"checks":%s,"failed":%s}' \
+    "$ts" "$event" "$(origin_repo)" "$(json_ids "$ran_ids")" "$(json_ids "$failed_ids")")
+  (
+    mkdir -p -- "$(dirname -- "$log")" || exit 0
+    { [ ! -e "$log" ] || [ -f "$log" ]; } || exit 0
+    printf '%s\n' "$line" >> "$log"
+  ) > /dev/null 2>&1 || true
+}
+
+case "$event" in
+  pre-commit|pre-push) log_run ;;
 esac
 
 if [ "$failed" -ne 0 ]; then
