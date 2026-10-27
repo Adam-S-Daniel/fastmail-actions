@@ -233,8 +233,15 @@ function Invoke-JmapMock {
                     foreach ($k in $keys) {
                         # An address starting "rejected-" fails the way the live server
                         # rejects one, so tests can check what a failure reports.
-                        $addr = [string](Get-Prop (Get-Prop $create $k) 'email')
-                        if ($addr -like 'rejected-*') {
+                        $obj = Get-Prop $create $k
+                        $addr = [string](Get-Prop $obj 'email')
+                        # Like the live server, reject anything beyond the standard
+                        # client-settable Identity properties.
+                        $names = if ($obj -is [System.Collections.IDictionary]) { @($obj.Keys) } else { @($obj.PSObject.Properties.Name) }
+                        $bad = @($names | Where-Object { $_ -notin 'email', 'name', 'replyTo', 'bcc', 'textSignature', 'htmlSignature' })
+                        if ($bad.Count -gt 0) {
+                            $notCreated[$k] = @{ type = 'invalidProperties'; properties = $bad; description = "Field '$($bad[0])' in 'identity' is not a valid field" }
+                        } elseif ($addr -like 'rejected-*') {
                             $notCreated[$k] = @{ type = 'invalidProperties'; properties = @('email'); description = 'mock rejection' }
                         } else {
                             $created[$k] = @{ id = "mock-id-$k"; verificationState = 'autoverified' }
@@ -479,7 +486,6 @@ function Add-FastmailIdentity {
         $Session,
         [string[]]$Addresses,
         [string]$Name,
-        [string]$SentId,
         $ExistingEmails,
         [switch]$Apply
     )
@@ -495,20 +501,18 @@ function Add-FastmailIdentity {
             $results += [pscustomobject]@{ Address = $addr; Status = 'skipped'; Detail = 'already an identity' }
             continue
         }
+        # Only the standard client-settable JMAP Identity properties (RFC 8621 6.1).
+        # Since late October 2026 Fastmail rejects its own extensions here
+        # (showInCompose, useForAutoReply, isAutoConfigured, enableExternalSMTP,
+        # saveSentToMailboxId) with invalidProperties.
         $obj = [ordered]@{
-            email              = $addr
-            name               = $displayName
-            replyTo            = $null
-            bcc                = $null
-            textSignature      = ''
-            htmlSignature      = ''
-            showInCompose      = $true
-            useForAutoReply    = $true
-            mayDelete          = $true
-            isAutoConfigured   = $false
-            enableExternalSMTP = $false
+            email         = $addr
+            name          = $displayName
+            replyTo       = $null
+            bcc           = $null
+            textSignature = ''
+            htmlSignature = ''
         }
-        if ($SentId) { $obj['saveSentToMailboxId'] = $SentId }
         $toCreate["$index"] = $obj
         $index++
     }

@@ -121,13 +121,13 @@ Describe 'JMAP + reporting (mock mode)' {
     It 'adds a new identity when applied' {
         $s = New-JmapSession -Token (Get-FastmailToken)
         $existing = @((Get-FastmailIdentities -Session $s) | ForEach-Object { $_.email })
-        $r = Add-FastmailIdentity -Session $s -Addresses @('brand-new@example.net') -Name 'X' -SentId 'mb-sent' -ExistingEmails $existing -Apply
+        $r = Add-FastmailIdentity -Session $s -Addresses @('brand-new@example.net') -Name 'X' -ExistingEmails $existing -Apply
         ($r | Where-Object Address -eq 'brand-new@example.net').Status | Should -Be 'added'
     }
 
     It 'reports the rejected property and reason when an add fails' {
         $s = New-JmapSession -Token (Get-FastmailToken)
-        $r = Add-FastmailIdentity -Session $s -Addresses @('rejected-one@example.net') -Name 'X' -SentId 'mb-sent' -ExistingEmails @() -Apply
+        $r = Add-FastmailIdentity -Session $s -Addresses @('rejected-one@example.net') -Name 'X' -ExistingEmails @() -Apply
         $f = $r | Where-Object Address -eq 'rejected-one@example.net'
         $f.Status | Should -Be 'failed'
         $f.Detail | Should -Be 'invalidProperties (email): mock rejection'

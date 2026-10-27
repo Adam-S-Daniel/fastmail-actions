@@ -137,7 +137,7 @@ $modeText = if ($apply) { 'applied' } else { 'dry run' }
 
 if ($new.Count -gt 0) {
     $results = Add-FastmailIdentity -Session $session -Addresses $new -Name $displayName `
-        -SentId $sentId -ExistingEmails $existing -Apply:$apply
+        -ExistingEmails $existing -Apply:$apply
 } else {
     $results = @()
 }
