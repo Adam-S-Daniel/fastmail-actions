@@ -55,13 +55,12 @@ if (-not $PSBoundParameters.ContainsKey('Name')) {
 }
 
 $mailboxes = Get-FastmailMailboxes -Session $session
-$sentId = Get-SentMailboxId -Session $session -Mailboxes $mailboxes
 
 # ShouldProcess returns $false under -WhatIf, $true otherwise.
 $apply = $PSCmdlet.ShouldProcess("Fastmail account", "add From identities")
 
 $results = Add-FastmailIdentity -Session $session -Addresses $Address -Name $displayName `
-    -SentId $sentId -ExistingEmails $existing -Apply:$apply
+    -ExistingEmails $existing -Apply:$apply
 
 $modeText = if ($apply) { 'applied' } else { 'dry run' }
 $runUrl = if ($env:GITHUB_RUN_ID -and $env:GITHUB_SERVER_URL -and $env:GITHUB_REPOSITORY) {
