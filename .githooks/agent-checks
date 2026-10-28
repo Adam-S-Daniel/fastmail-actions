@@ -34,7 +34,7 @@
 # ${XDG_STATE_HOME:-$HOME/.local/state}/agent-checks/runs.jsonl, so a dashboard
 # can show how often each check runs and refuses, per repo, over time:
 #   {"v":1,"ts":"2026-10-26T12:00:00Z","event":"pre-commit","repo":"owner/name",
-#    "checks":["rules-dir","secret-file"],"failed":["secret-file"]}
+#    "checks":["rules-dir","secret-file","skill-shell"],"failed":["secret-file"]}
 # `repo` is origin's GitHub owner/name, or null for any other remote. `checks`
 # are the ids of the checks that ran, `failed` the ones that refused. The line
 # holds no paths, messages, branch names or user names. AGENT_CHECKS_LOG=off
@@ -116,6 +116,18 @@ check_paths() {
       .env|.env.*|*.pem|*.key|*.p12|*.pfx|id_rsa|id_ecdsa|id_ed25519)
         problem secret-file "$path: looks like a secret or credential file, and git history in a public repo is public. Unstage it (git restore --staged -- '$path') and add it to .gitignore." ;;
     esac
+    # A skill or command file that runs a shell command when it loads.
+    is_skill_file=false
+    case "${path##*/}" in SKILL.md) is_skill_file=true ;; esac
+    case "$path" in
+      .claude/commands/*.md|*/.claude/commands/*.md|plugins/*/commands/*.md) is_skill_file=true ;;
+    esac
+    # A here-string, not a pipe: grep -q exits at the first match, which can
+    # kill a writer still filling the pipe.
+    if $is_skill_file \
+        && grep -Eq '(^|[[:space:]])!`|^[[:space:]]*```!' <<<"$(file_content "$path")"; then
+      problem skill-shell "$path: a line starts a shell command that Claude Code runs when the skill loads (an exclamation mark then a backtick, at line start or after a space, or a code fence opened with a backtick fence and an exclamation mark). It runs before the model reads the skill, so no review and no prompt-injection defense sees it. Have the skill tell the agent to run the command, or move the command into a script the skill calls."
+    fi
     check_lessons "$path" < /dev/null
   done
 }
@@ -162,6 +174,7 @@ run_checks() {
   local list id
   note_ran rules-dir
   note_ran secret-file
+  note_ran skill-shell
   for id in $lesson_checks; do note_ran "$id"; done
   list=$(mktemp) || { problem runner-error "could not create a temp file, so nothing was checked."; return; }
   cat > "$list"
