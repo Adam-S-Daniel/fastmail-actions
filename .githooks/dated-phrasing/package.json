@@ -1,0 +1,9 @@
+{
+  "name": "agent-checks-dated-phrasing",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The one dependency of .githooks/dated-phrasing.js, installed by .githooks/agent-checks into a cache outside the repo. Managed by _agent-guidance (templates/agent-checks/).",
+  "dependencies": {
+    "markdown-it": "15.0.3"
+  }
+}

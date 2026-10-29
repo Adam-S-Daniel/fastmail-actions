@@ -1,0 +1,68 @@
+# dated-phrasing allowlist (fleet-wide, managed by _agent-guidance).
+#
+# One entry per line: <owner/repo> <path> :: <text>
+# A hit is not reported when the repo and path match and <text> occurs in the
+# raw source of the Markdown block (paragraph, list item, heading) that holds
+# it. `*` as the repo matches any repo. Runs of whitespace compare as one space,
+# so a reflowed paragraph keeps its entry. Blank lines and `#` comments are
+# ignored. A repo's own entries go in .agent-checks/dated-phrasing-allowlist.txt,
+# in the same format.
+#
+# An entry is for text that is fine as written: present-tense facts that happen
+# to use a listed phrase, version-anchored product behavior, dates that qualify
+# a measurement or observation, quoted examples. History of how this repo or
+# process changed is not fine; reword it instead. Reviewed 2026-10-29 against
+# every fleet repo's default branch (_agent-guidance#348).
+
+# Present-tense facts that use a listed phrase.
+Adam-S-Daniel/adam-agentskills AGENTS.md :: a skill that no longer exists
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: none** of them names it any more
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: one whose bytes no longer match
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: is now left alone forever
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: "repo-owned" no longer identifies
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: is now raised only where every local rung is
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/workflow-path-audit/SKILL.md :: is no longer reviewable as an audit
+Adam-S-Daniel/_agent-guidance docs/reference/adopt-the-whole-system/starter/agent-skills/plugins/<you>-coding-anywhere/skills/workflow-path-audit/SKILL.md :: is no longer reviewable as an audit
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/migrate-claude-memory/SKILL.md :: anymore. And because
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/sync-cc-settings-between-wsl-and-windows/SKILL.md :: more-recently-modified-wins
+Adam-S-Daniel/adam-agentskills plugins/adam-non-coding-local/skills/fastmail/SKILL.md :: Confirm the inbox is now visible
+Adam-S-Daniel/cms-platform skills/cms-stuck-pr-triage/SKILL.md :: reported green no longer counts
+Adam-S-Daniel/cms-platform skills/github-actions-sha-pinning/SKILL.md :: can no longer move it, and fails SILENTLY
+Adam-S-Daniel/cms-platform skills/platform-release-and-bump/SKILL.md :: the precondition is now MORE likely
+Adam-S-Daniel/wsl-automation AGENTS.md :: Real, previously-booted distros
+jodidaniel/jodidaniel.com AGENTS.md :: previously partner and
+
+# Version-anchored product behavior.
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/github-actions-repo-settings/SKILL.md :: no longer accepted
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: in either no longer loads
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/migrate-claude-memory/SKILL.md :: 2.1.273 and later no longer loads
+Adam-S-Daniel/adam-agentskills AGENTS.md :: repos from 2026-11-02
+
+# Quoted examples and example data.
+Adam-S-Daniel/adam-agentskills plugins/adam-anything-anywhere/skills/writing-adrs/SKILL.md :: No "as of today the build is broken"
+Adam-S-Daniel/adam-agentskills plugins/adam-non-coding-local/skills/rename-pdfs/SKILL.md :: "Scan from 2024-03-15.pdf"
+Adam-S-Daniel/adam-agentskills plugins/adam-non-coding-local/skills/rename-pdfs/SKILL.md :: "as of" date
+
+# Dates that qualify a measurement, an observation or a decision.
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/ci-job-performance/SKILL.md :: were measured
+Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/sync-cc-settings-between-wsl-and-windows/SKILL.md :: checked against the [settings reference]
+Adam-S-Daniel/ai-usage-dashboard AGENTS.md :: tested 2026-10-20
+Adam-S-Daniel/skills-evals AGENTS.md :: on 2 cores (2026-10-10)
+Adam-S-Daniel/cms-platform AGENTS.md :: owner decision 2026-10-05
+Adam-S-Daniel/cms-platform AGENTS.md :: the 2026-09-28
+Adam-S-Daniel/cms-platform AGENTS.md :: lint-locked (2026-08-20)
+Adam-S-Daniel/cms-platform AGENTS.md :: since 2026-10-22
+Adam-S-Daniel/wsl-automation AGENTS.md :: verified on the owner's machine
+Adam-S-Daniel/wsl-automation AGENTS.md :: on the first real run
+Adam-S-Daniel/wsl-automation AGENTS.md :: Verified 2026-09-25
+Adam-S-Daniel/wsl-automation AGENTS.md :: Observed live 2026-09-27
+Adam-S-Daniel/wsl-automation AGENTS.md :: Observed 2026-09-29
+Adam-S-Daniel/wsl-automation AGENTS.md :: (observed 2026-10-05)
+Adam-S-Daniel/wsl-automation AGENTS.md :: 2026-10-04 13:02 EDT a test ran
+Adam-S-Daniel/_agent-guidance AGENTS.md :: (The 2026-08-19 incident:
+
+# Dates that qualify a decision or an observed event in skills-evals' workflow table.
+Adam-S-Daniel/skills-evals AGENTS.md :: Adam's 2026-10-06 decision
+Adam-S-Daniel/skills-evals AGENTS.md :: as on 2026-10-27
+Adam-S-Daniel/skills-evals AGENTS.md :: (ADR 0010 decision 4 addendum, 2026-10-26)
+Adam-S-Daniel/skills-evals AGENTS.md :: (ADR 0003's 2026-10-26 addendum)

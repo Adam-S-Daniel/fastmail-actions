@@ -29,6 +29,13 @@
 # rule's documentation: an agent learns it when it breaks it, so the rule does
 # not need to sit in always-on guidance.
 #
+# After the refusing checks, every event but an unknown one runs one WARNING
+# pass, dated-phrasing (.githooks/dated-phrasing.js; see "Warning pass" below):
+# dated history and migration-relative phrasing in the Markdown agents load as
+# instructions. It prints `agent-checks (warning):` lines, or `::warning`
+# annotations in CI, and never changes the exit status. To keep a flagged line
+# that is right as written, add it to .agent-checks/dated-phrasing-allowlist.txt.
+#
 # Run log. Each pre-commit and pre-push run (never ci or tree) appends one JSON
 # line to $AGENT_CHECKS_LOG, by default
 # ${XDG_STATE_HOME:-$HOME/.local/state}/agent-checks/runs.jsonl, so a dashboard
@@ -36,7 +43,8 @@
 #   {"v":1,"ts":"2026-10-26T12:00:00Z","event":"pre-commit","repo":"owner/name",
 #    "checks":["rules-dir","secret-file","skill-shell"],"failed":["secret-file"]}
 # `repo` is origin's GitHub owner/name, or null for any other remote. `checks`
-# are the ids of the checks that ran, `failed` the ones that refused. The line
+# are the ids of the checks that ran (dated-phrasing only when it read a file),
+# `failed` the ones that refused; a warning is never in `failed`. The line
 # holds no paths, messages, branch names or user names. AGENT_CHECKS_LOG=off
 # turns it off. Logging is best effort: a failure is silent and never changes
 # the exit code or the output.
@@ -168,8 +176,131 @@ run_local_checks() {
   fi
 }
 
+# ── Warning pass: dated phrasing ─────────────────────────────────────────────
+# .githooks/dated-phrasing.js warns about dated history and migration-relative
+# phrasing ("is now", "no longer", "moved to", an ISO date) in the Markdown
+# agents load as instructions: every AGENTS.md (its repo-specific half),
+# CLAUDE.md and SKILL.md, and agents-md/**. That text is read as the rule that
+# holds now, so a story about what changed, and when, goes stale there; it
+# belongs in docs/evidence/ or git (_agent-guidance#348). Its header lists the
+# phrases and the exemptions (code, quotes, HTML, URLs, link text).
+#
+# It only ever warns: it runs after the refusing checks, its output never
+# changes the exit status, and any failure of its own (no node or npm, an
+# offline install, an internal error) prints one warning line and moves on
+# (_agent-guidance ADR 0017: checks that grow out of the prompt audit warn).
+# Each warning line starts `agent-checks (warning):`, or is a `::warning`
+# annotation under GitHub Actions; it names the path, line and phrase only.
+#
+# It needs markdown-it (a real Markdown parse, never a line scan). The runner
+# installs the exact version .githooks/dated-phrasing/package-lock.json pins,
+# with `npm ci --ignore-scripts`, into a cache keyed by the lockfile's sha256,
+# ${XDG_CACHE_HOME:-$HOME/.cache}/agent-checks/dated-phrasing/<sha256> (under
+# $RUNNER_TEMP in CI), and reuses it after that. Nothing is installed when no
+# path in scope changed.
+#
+# To keep text that is right as written (a present-tense fact that uses a
+# listed phrase, a date that qualifies a measurement), add a line to this
+# repo's .agent-checks/dated-phrasing-allowlist.txt, which the sync never
+# touches:
+#   owner/repo path/to/AGENTS.md :: a few words from the flagged sentence
+# The entry silences the flagged paragraph, list item or heading whose source
+# holds those words. The format is in .githooks/dated-phrasing-allowlist.txt,
+# the fleet's own list, managed by _agent-guidance.
+dated_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || dated_dir=""
+
+# dated_warn <message> — one warning line, never a refusal. On stderr in both
+# forms (GitHub reads annotations from either stream), so a caller's command
+# substitution never captures it.
+dated_warn() {
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    printf '::warning title=dated-phrasing::%s\n' "$1" >&2
+  else
+    printf 'agent-checks (warning): %s\n' "$1" >&2
+  fi
+}
+
+# dated_modules — print the node_modules directory that holds markdown-it,
+# installing it on first use; on failure warn once and return 1.
+# AGENT_CHECKS_DATED_PHRASING_MODULES names a directory to use instead, for
+# the tests, which must not reach the network.
+dated_modules() {
+  local pkg=$dated_dir/dated-phrasing base key dir tmp
+  if [ -n "${AGENT_CHECKS_DATED_PHRASING_MODULES:-}" ]; then
+    printf '%s\n' "$AGENT_CHECKS_DATED_PHRASING_MODULES"
+    return 0
+  fi
+  if ! command -v npm > /dev/null 2>&1; then
+    dated_warn "dated-phrasing skipped: npm is not on PATH, so markdown-it cannot be installed. Install Node.js to get these warnings locally; CI still runs them."
+    return 1
+  fi
+  if [ "${GITHUB_ACTIONS:-}" = true ] && [ -n "${RUNNER_TEMP:-}" ]; then
+    base=$RUNNER_TEMP
+  elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+    base=$XDG_CACHE_HOME
+  elif [ -n "${HOME:-}" ]; then
+    base=$HOME/.cache
+  else
+    dated_warn "dated-phrasing skipped: neither XDG_CACHE_HOME nor HOME is set, so there is nowhere to install markdown-it."
+    return 1
+  fi
+  key=$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' \
+        "$pkg/package-lock.json" 2> /dev/null) || key=""
+  case "$key" in
+    ''|*[!0-9a-f]*)
+      dated_warn "dated-phrasing skipped: $pkg/package-lock.json is missing or unreadable."
+      return 1 ;;
+  esac
+  dir=$base/agent-checks/dated-phrasing/$key
+  if [ ! -f "$dir/node_modules/markdown-it/package.json" ]; then
+    # Install beside the final directory and rename into place, so a run that
+    # is interrupted, or races another, never leaves a half-installed cache.
+    if ! { mkdir -p "$base/agent-checks/dated-phrasing" \
+           && tmp=$(mktemp -d "$base/agent-checks/dated-phrasing/.install.XXXXXX") \
+           && cp "$pkg/package.json" "$pkg/package-lock.json" "$tmp/" \
+           && (cd "$tmp" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error) > /dev/null 2>&1; }; then
+      [ -n "${tmp:-}" ] && rm -rf "$tmp"
+      dated_warn "dated-phrasing skipped: installing markdown-it with npm ci failed (offline, or no access to the npm registry). It retries on the next run."
+      return 1
+    fi
+    [ -f "$dir/node_modules/markdown-it/package.json" ] || { rm -rf "$dir"; mv "$tmp" "$dir" 2> /dev/null; }
+    rm -rf "$tmp"
+    if [ ! -f "$dir/node_modules/markdown-it/package.json" ]; then
+      dated_warn "dated-phrasing skipped: markdown-it was installed but could not be moved into $dir."
+      return 1
+    fi
+  fi
+  printf '%s\n' "$dir/node_modules"
+}
+
+# run_dated_phrasing <list> — the warning pass over a NUL-separated path list.
+# It is counted in the run log (note_ran) only when it read a file.
+run_dated_phrasing() {
+  local list=$1 top rev count mods rc=0
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -n "$dated_dir" ] && [ -f "$dated_dir/dated-phrasing.js" ] || return 0
+  if ! command -v node > /dev/null 2>&1; then
+    # Silent unless a path in scope changed, which needs no node to tell.
+    count=$(tr '\0' '\n' < "$list" | grep -vE '^evals/.*/seed/' \
+            | grep -cE '(^|/)(AGENTS|CLAUDE|SKILL)\.md$|^agents-md/.*\.md$') || count=0
+    [ "$count" -gt 0 ] && dated_warn "dated-phrasing skipped: node is not on PATH. Install Node.js to get these warnings locally; CI still runs them."
+    return 0
+  fi
+  count=$(cd "$top" && node "$dated_dir/dated-phrasing.js" --count-scope < "$list" 2> /dev/null) || count=""
+  case "$count" in
+    ''|*[!0-9]*) dated_warn "dated-phrasing skipped: it could not read the path list."; return 0 ;;
+    0) return 0 ;;
+  esac
+  mods=$(dated_modules) || return 0
+  note_ran dated-phrasing
+  rev=$content_rev
+  (cd "$top" && node "$dated_dir/dated-phrasing.js" --rev "$rev" --modules "$mods" < "$list") || rc=$?
+  [ "$rc" -eq 0 ] || dated_warn "dated-phrasing stopped with exit $rc; its warnings may be incomplete."
+  return 0
+}
+
 # run_checks — the fleet checks, then the repo's own, over the same
-# NUL-separated path list on stdin.
+# NUL-separated path list on stdin, then the warning pass.
 run_checks() {
   local list id
   note_ran rules-dir
@@ -180,6 +311,7 @@ run_checks() {
   cat > "$list"
   check_paths < "$list"
   run_local_checks < "$list"
+  run_dated_phrasing "$list"
   rm -f "$list"
 }
 
