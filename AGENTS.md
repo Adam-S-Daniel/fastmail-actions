@@ -15,7 +15,7 @@ The account's full guidance — incidents, fleet policy, machine layout, the
 traps that cost real outages — is installed into **user memory**
 (`~/.claude/CLAUDE.md`) by the `fleet-memory` SessionStart hook, so it is
 loaded **once per session** no matter how many repos are attached
-([2026-08-29: inlined per repo, it took 332.3k tokens](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/2026-08-29-guidance-inlined-in-every-repo.md)).
+([inlined per repo, it took 332.3k tokens](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/2026-08-29-guidance-inlined-in-every-repo.md)).
 
 **Check the session-start verdict before you rely on it.** The hook prints one
 line:
@@ -37,25 +37,9 @@ No verdict at all means the hook never ran — treat that as DEGRADED.
 
 ## Codex reads the same block, from `~/.codex/AGENTS.md`
 
-The hook writes the same block to `~/.codex/AGENTS.md` whenever `~/.codex`
-exists — Codex's global **user** instructions, outside its 32 KiB
-`project_doc_max_bytes` project-doc budget. Register it once per machine with
-`scripts/register-codex-hook.sh` from an `_agent-guidance` checkout, then
-trust it in `/hooks`. `codex debug prompt-input` renders instructions loaded
-from disk by its own diagnostic process; it does not run SessionStart hooks
-or inspect an existing session or daemon. Verify delivery in the launched
-session's initial instructions and verdict; see the
-[2026-10-04 evidence](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/codex-trust-and-daemon-0160.md#prompt-debugging-source-read-2026-10-04-cli-01600-rust-v01600).
-
-For Codex Cloud, use **Manual** environment setup with persistent
-`CODEX_HOME=/opt/codex`. Preserve the repository's dependency setup and run
-`bash .claude/hooks/fleet-memory.sh --codex-cloud` in both setup and
-maintenance; reset the cache for the first verification. Fresh setup and
-cached maintenance were verified in the `_agent-guidance` environment. See
+The hook writes the same block there whenever `~/.codex` exists. Setup for
+local Codex and Codex Cloud, and how to verify delivery:
 [`docs/codex-cloud.md`](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/codex-cloud.md).
-If the Cloud shell has no `codex debug prompt-input`, the saved task response's
-raw initial instruction envelope is the echo-free proof of model-visible
-delivery.
 
 ## The floor: rules that hold even when the guidance did not load
 
@@ -86,8 +70,10 @@ session that lost the guidance must not also lose these.
   scoped to one returns a plausible, complete-shaped, wrong answer.
 - **Anything you name gets its link** — what you hand over, what you are
   waiting on, and what you cite as already done.
-- **Merge with a merge commit** (`gh pr merge --merge`); do not amend
-  published commits or force-push shared branches.
+- **Merge with a merge commit** (`gh pr merge --merge`), except in the three
+  cms-platform-managed repos (`cms-platform`, `adamdaniel.ai`,
+  `jodidaniel.com`), which squash; do not amend published commits or
+  force-push shared branches.
 - **Keep this file under 32 KiB.** Codex truncates project instructions at
   that byte silently; the sync warns and the drift report flags
   `codex-truncated`.

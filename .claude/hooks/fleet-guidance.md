@@ -8,7 +8,8 @@ Only what is **specific to this account and learned the hard way**; depth
 lives in each repo's `docs/` and the skills registry. Delivered once per
 session to BOTH `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, so a rule for
 every agent goes here, not in `~/.claude/AGENTS.md` (one tool only). Keep it
-under 25 KiB; Codex silently cuts a full-mode AGENTS.md at 32 KiB.
+under 25 KiB; Codex silently cuts a full-mode AGENTS.md at 32 KiB. The
+incident behind each rule: `docs/evidence/base-md-incidents.md`.
 
 ## Working in these repos
 
@@ -38,8 +39,8 @@ under 25 KiB; Codex silently cuts a full-mode AGENTS.md at 32 KiB.
 ## Anything you name gets its link
 
 Any noun the reader might open gets its URL in the same sentence:
-**what you hand over** (jodidaniel.com#176), **what YOU are waiting on**
-(every time you name it), **what you cite as DONE** (2026-08-29).
+**what you hand over**, **what YOU are waiting on** (every time you name
+it), **what you cite as DONE**.
 
 - **Link the surface that decides, not its parent.** A required environment
   review lives on its job page, `.../actions/runs/<run_id>/job/<job_id>`, not
@@ -162,12 +163,12 @@ hold before writing.
   writes, none of those four. Reach: a GitHub App allowlist INDEPENDENT of the
   attached repos. **Probe for it by connector NAME, never a remembered
   prefix**. It checks a PR with `pull_request_read` `method:
-  "get_check_runs"` and `"get_status"`; read BOTH (#83: `get_status`
-  `pending` while every check run was green). It cannot dispatch or read a
+  "get_check_runs"` and `"get_status"`; read BOTH (`get_status` can
+  read `pending` while every check run is green). It cannot dispatch or read a
   workflow RUN; its merge is synchronous.
 - **Fewer tools is not less dangerous.** Both merge, push and delete; the
-  subset's reach cannot be inferred from the session's repo list (2026-08-19:
-  `github-mcp` 404s on private `repo-settings`).
+  subset's reach cannot be inferred from the session's repo list
+  (`github-mcp` can 404 on a private repo the other server reads).
 
 Prefer `mcp__github__`; use `github-mcp` only when the other cannot see a
 repo, say so, and name the connector in each verification.
@@ -192,8 +193,8 @@ exists, so every 404 is ambiguous: gone, or invisible to that credential.
 - **Probe the repo, not the object.** If `GET /repos/<owner>/<repo>/pulls`
   404s too, the repo is invisible (a scope gap); if only the object does, it
   is gone.
-- **Try the other connector first** (2026-08-19: a mid-session MCP reconnect
-  brought up a server blind to a private repo the other read;
+- **Try the other connector first** (a mid-session MCP reconnect can bring
+  up a server blind to a private repo the other reads;
   `add_repo` "already attached" is session scope).
 - **Git is a separate credential path:** `git ls-remote origin '<ref>'` asks
   "does this branch exist", `git merge-base --is-ancestor <sha> origin/main`
@@ -206,8 +207,8 @@ exists, so every 404 is ambiguous: gone, or invisible to that credential.
 `Adam-S-Daniel` and `jodidaniel`, both in `SYNC_OWNERS` (_agent-guidance's
 `sync.yml` and sibling workflows): enumerate it, never hardcode one. A
 query scoped to one owner returns a plausible, complete-shaped, wrong
-result (2026-08-25: a `user:Adam-S-Daniel` search "proved" jodidaniel.com
-had no `skills.lock`).
+result (a `user:Adam-S-Daniel` search "proves" jodidaniel.com has no
+`skills.lock`).
 
 - **Prefer the fleet's registries** (`repos.yml`, `fleet.yml`,
   `cron_coverage.fleet`) to a search index; a zero result is weak
@@ -216,7 +217,7 @@ had no `skills.lock`).
 - **Your session's reach is not the fleet's shape** — it is per-session and
   may miss an owner; "I cannot see it" and "it does not exist" differ.
 - **The DENOMINATOR is the part that lies.** Enumerating local checkouts
-  errs both ways (issue #37: three deleted repos counted, a live one missed).
+  errs both ways (three deleted repos counted, a live one missed).
   Take it from a registry or the remote, never the disk, and say which.
 
 ## "The watch finished" is not "CI passed"
@@ -239,7 +240,7 @@ hides FAILURE lines.
   and the other reads clean. "Watch done" means "now verify".
 - **A pipe into `grep -q` is a race.** `grep -q` exits at the first match, so
   past the 64 KiB pipe buffer the writer dies 141 and `pipefail` reads a
-  present marker as absent (issue #81; 20 trials per size: 48 kB 0/20,
+  present marker as absent (20 trials per size: 48 kB 0/20,
   95 kB 18/20). Feed data as an argument or here-string —
   `grep -qxF -- "$m" <<<"$s"`.
   A size-dependent bug needs trials, not a probe; say how many.
@@ -253,8 +254,7 @@ hides FAILURE lines.
 A pre-commit hook that refuses the commit does not stop the push: `git push`
 pushes the base commit and prints an ordinary success. The
 fleet's `secrets-scan` guard (cms-platform's `dev-hooks-sync.yml`) FAILS
-CLOSED without `gitleaks` on `PATH`, which a fresh container lacks
-(2026-08-25, adamdaniel.ai).
+CLOSED without `gitleaks` on `PATH`, which a fresh container lacks.
 
 - **Verify the commit, not the push:** `git log --oneline -1` shows your
   message and `git status --short` is clean, or `git rev-parse HEAD` differs
@@ -265,15 +265,15 @@ CLOSED without `gitleaks` on `PATH`, which a fresh container lacks
   emergencies; the binary is one `curl` away.
 - **A push can carry the WRONG ref while both checks pass.**
   `git push -u origin <name>` pushes the LOCAL branch of that name, maybe
-  not the one you are on (2026-08-29: the commit landed on `main` and
-  the push updated a stale local branch). The only check naming commit AND
+  not the one you are on (the commit lands on `main` and the push
+  updates a stale local branch). The only check naming commit AND
   remote branch: `git merge-base --is-ancestor <sha> origin/<branch>`, after
   every push.
 
 ## Dependency updates
 
-Dependabot `cooldown`: `default-days: 7` (cms-platform `exclude`d, #424);
-`semver-major-days: 30` where supported (not `github-actions`, #133). Version
+Dependabot `cooldown`: `default-days: 7` (cms-platform `exclude`d);
+`semver-major-days: 30` where supported (not `github-actions`). Version
 updates only (advisories bypass it); unset still waits 3 days; leave
 `semver-minor-days` / `-patch-days` undefined.
 **By hand**, nothing watches: take the newest release past 7 days
@@ -303,7 +303,7 @@ name outlives a rename).
 - **Do not lean on a scanner's internals.** `sha256:<hex>` dodges the rule
   only because `:` is outside its capture class.
 - **Suppress by value, never by path.** A `paths` entry skips the file before
-  any rule runs (cms-platform#260).
+  any rule runs.
 
 ## Pinning GitHub Actions
 
@@ -328,7 +328,7 @@ name outlives a rename).
 
 ## A test that can signal can kill every session
 
-2026-10-04: a mocked pid became `kill(-1, SIGKILL)`; every user process died
+A mocked pid became `kill(-1, SIGKILL)`; every user process died
 ([evidence](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/2026-10-04-killpg-on-a-mocked-pid.md)).
 
 - **Code that signals refuses any pid or group but an `int` > 1**, before the
@@ -339,7 +339,7 @@ name outlives a rename).
   kill. Find what sent the signal.
 - **A session that dies mid-verifier is evidence against it.** After a
   restart, find what killed it (journal, 137, `dmesg`) before re-running:
-  resumed agents re-running the suite made one kill fifteen (2026-10-04).
+  resumed agents re-running the suite made one kill fifteen.
 - **Run spawning or signaling suites in a PID namespace:**
   `unshare --user --map-current-user --pid --fork --mount-proc -- <cmd>`.
 
@@ -359,16 +359,15 @@ name outlives a rename).
   stop-and-report; a self-contradicting report ("2 failed",
   "exit 0"), re-run it. **Prove the verifier can fail first:**
   `python3 test_foo.py` with no `__main__` block exits 0 having asserted
-  nothing (2026-08-22). Name the RUNNER (`python3 -m pytest <paths> -q`),
+  nothing. Name the RUNNER (`python3 -m pytest <paths> -q`),
   never the file, and require the test COUNT beside the exit code.
 - **A working subagent OWNS the tree — do not commit or push under it.** A
   push mid-flight plus its `git commit --amend` diverges a published branch
-  (2026-08-22; recover by reset and a fresh commit, never force-push), and its
+  (recover by reset and a fresh commit, never force-push), and its
   `git checkout -- <file>` discards your edits. Wait for a clean `git status`
   plus a recorded result; decline a stop hook's "commit and push" nudge.
 - **A subagent that has REPORTED can still be holding the tree**: its
-  BACKGROUND CHILDREN are not reaped (2026-08-29: a 999/0 tree read
-  985/14). Look for descendants before trusting a long run
+  BACKGROUND CHILDREN are not reaped (a 999/0 tree read 985/14). Look for descendants before trusting a long run
   (`ps -eo pid,etimes,cmd | grep '[y]our-command'`); `md5sum` inputs before
   and after (differ → not evidence); prefer a per-run output path; kill
   orphans, and say so.
@@ -449,11 +448,10 @@ belongs in a repo's `AGENTS.md`.
   are off (`--squash` fails; do not offer it) except the three
   cms-platform-managed repos (`cms-platform`, `adamdaniel.ai`,
   `jodidaniel.com`), kept for Decap publishing. Squash strands commits a
-  lockfile pins by sha (2026-08-15: `cannot resolve ref`).
+  lockfile pins by sha (`cannot resolve ref`).
 - **A closing keyword before `#N` or an issue/PR URL, any repo, closes it,
   PRs too**, from a PR body or any commit message; backticks don't help,
-  and linked issues won't show it (cms-platform#283 via `78617e1`,
-  _agent-guidance#136 by cms-platform#434). To close: `Closes #N`, not
+  and linked issues won't show it. To close: `Closes #N`, not
   `For #N`; else omit it. After merging, check what should stay open is.
 - **Before a PR, `git log origin/<base>..HEAD --oneline` lists only this
   task's commits.** A reusable worktree (`.claude/worktrees/<name>/`) carries
