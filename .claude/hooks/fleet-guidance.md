@@ -108,8 +108,11 @@ public repo.
 
 ## Read before you start
 
-- **Settings schema design** (config keys, flags, fields): https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/reference/settings-schema-design.md
-- **Network allowlists** (editing either egress allowlist): https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/reference/network-allowlists.md
+Under https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/reference/:
+
+- `settings-schema-design.md`: config keys, flags, fields
+- `network-allowlists.md`: editing either egress allowlist
+- `code-scanning-alerts.md`: reading alerts when the token gets 403
 
 ## Automation vs branch protection
 
