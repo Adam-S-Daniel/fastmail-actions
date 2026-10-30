@@ -131,8 +131,10 @@ Fleet repos are PR-only on the default branch via ruleset, managed in
 - A bot that must write to a default branch needs a ruleset bypass actor
   declared in repo-settings' `fleet.yml`, never
   a hand-granted UI bypass.
-- PR + auto-merge is not a sanctioned bot-write path, bar skills-evals' roster
-  PR (repo-settings ADR 0003); cms-platform-managed repos use it by design.
+- PR + auto-merge is a sanctioned bot-write path only where a repo-settings
+  ADR declares the exception: the eval and guidance loops' PRs (ADRs 0003,
+  0012, 0014), lesson-check PRs (0013) and the changelog routine's (0015);
+  cms-platform-managed repos use it by design.
 - **A required status check gets no `concurrency` group** when its job can
   fire twice on one head sha (label events, `opened` + `synchronize`): a
   cancelled run can win the context and block the merge for good.
