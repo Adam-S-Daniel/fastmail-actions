@@ -57,10 +57,14 @@
 #    Authorization header sent to api.github.com with the session's GitHub
 #    credential, which reaches only the repos attached to the session, and it
 #    refuses /app/* paths outright (measured 2026-10-31: "Bearer garbage" got
-#    200 on the private repo; an App JWT got 401 "could not be decoded"). So
-#    the hook first asks GET /repos/<repo> with no Authorization header, and
-#    writes that way when the answer is 200 with permissions.push true, which
-#    is the case whenever the private repo is attached.
+#    200 on the private repo; an App JWT got 401 "could not be decoded"). It
+#    also refuses writes through the contents API (403 "Write access to this
+#    GitHub API path is not permitted through this proxy") while allowing a
+#    git push. So the hook first asks GET /repos/<repo> with no Authorization
+#    header, and when the answer is 200 with permissions.push true (the
+#    private repo is attached) it appends with git instead: a depth-1 clone of
+#    the branch into a private temp dir, one commit, one push, and on a
+#    rejected push one fresh clone and retry.
 # 2. A GitHub App, where no proxy rewrites the header: when
 #    USAGE_WRITER_APP_CLIENT_ID and USAGE_WRITER_APP_PEM (the PEM text, or that
 #    text base64-encoded) are set, an installation token minted from that App,
@@ -81,7 +85,9 @@
 #
 # Test seams: GUIDANCE_RECORD_NOW (an ISO 8601 UTC time, e.g.
 # 2026-10-31T12:00:00Z) replaces the clock; GUIDANCE_RECORD_API (default
-# https://api.github.com) replaces the API base URL.
+# https://api.github.com) replaces the API base URL; GUIDANCE_RECORD_GIT
+# (default https://github.com/Adam-S-Daniel/adam-agentskills-private) replaces
+# the git remote.
 
 exec 1>/dev/null 2>/dev/null
 
@@ -227,7 +233,10 @@ def api(work, method, url, bearer, body=None):
         ('header = "Authorization: Bearer %s"\n' % bearer if bearer else "") +
         'header = "Accept: application/vnd.github+json"\n'
         'header = "X-GitHub-Api-Version: 2022-11-28"\n'
-        'header = "User-Agent: guidance-load-record"\n')
+        'header = "User-Agent: guidance-load-record"\n' +
+        # The hosted proxy refuses a body without this (415, measured
+        # 2026-10-31); GitHub itself does not need it.
+        ('header = "Content-Type: application/json"\n' if body is not None else ""))
     try:
         done = subprocess.run(args, input=config, capture_output=True, text=True, timeout=cap + 1)
         status = int(done.stdout.strip() or 0)
@@ -294,6 +303,46 @@ def append(work, base, token, line, when):
     return False
 
 
+def git(args, cwd=None):
+    cap = min(10.0, remaining())
+    if cap < 1:
+        return False
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        return subprocess.run(["git"] + args, cwd=cwd, env=env, capture_output=True,
+                              timeout=cap).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def git_append(work, line, when):
+    remote = os.environ.get("GUIDANCE_RECORD_GIT") or "https://github.com/%s" % REPO
+    rel = os.path.join("events", when.strftime("%Y-%m"), "cloud-guidance.jsonl")
+    who = []
+    if subprocess.run(["git", "config", "user.email"], capture_output=True).returncode != 0:
+        who = ["-c", "user.name=guidance-load-record",
+               "-c", "user.email=guidance-load-record@users.noreply.github.com"]
+    for attempt in range(2):
+        tree = os.path.join(work, "clone%d" % attempt)
+        if not git(["clone", "-q", "--depth", "1", "--single-branch", "--branch", BRANCH, remote, tree]):
+            return False
+        target = os.path.join(tree, rel)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        old = b""
+        if os.path.exists(target):
+            with open(target, "rb") as handle:
+                old = handle.read()
+        if old and not old.endswith(b"\n"):
+            old += b"\n"
+        with open(target, "wb") as handle:
+            handle.write(old + line.encode("utf-8") + b"\n")
+        if not (git(["add", rel], tree) and git(who + ["commit", "-q", "-m", "guidance-load event"], tree)):
+            return False
+        if git(["push", "-q", "origin", "HEAD:refs/heads/" + BRANCH], tree):
+            return True
+    return False
+
+
 def app_token(work, base, when):
     client_id = os.environ.get("USAGE_WRITER_APP_CLIENT_ID", "")
     pem = os.environ.get("USAGE_WRITER_APP_PEM", "")
@@ -328,7 +377,7 @@ def upload(line, when):
         status, doc = api(work, "GET", "%s/repos/%s" % (base, REPO), None)
         perms = doc.get("permissions") if status == 200 and isinstance(doc, dict) else None
         if isinstance(perms, dict) and perms.get("push") is True:
-            return append(work, base, None, line, when)
+            return shutil.which("git") is not None and git_append(work, line, when)
         token = app_token(work, base, when)
         return append(work, base, token, line, when) if token else False
     except Exception:
