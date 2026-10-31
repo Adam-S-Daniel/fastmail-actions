@@ -33,6 +33,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guidance-load-record.sh\"",
+            "timeout": 20
+          }
+        ]
+      }
     ]
   },
   "disableSkillShellExecution": true

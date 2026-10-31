@@ -41,10 +41,13 @@
 # ${XDG_STATE_HOME:-$HOME/.local/state}/agent-checks/runs.jsonl, so a dashboard
 # can show how often each check runs and refuses, per repo, over time:
 #   {"v":1,"ts":"2026-10-26T12:00:00Z","event":"pre-commit","repo":"owner/name",
-#    "checks":["rules-dir","secret-file","skill-shell"],"failed":["secret-file"]}
+#    "checks":["rules-dir","secret-file","skill-shell"],"failed":["secret-file"],
+#    "runner":"0123456789ab"}
 # `repo` is origin's GitHub owner/name, or null for any other remote. `checks`
 # are the ids of the checks that ran (dated-phrasing only when it read a file),
-# `failed` the ones that refused; a warning is never in `failed`. The line
+# `failed` the ones that refused; a warning is never in `failed`. `runner` is
+# the first 12 hex digits of this file's own sha256, so a count can tell which
+# version of the runner a repo had, or null when no hash tool is found. The line
 # holds no paths, messages, branch names or user names. AGENT_CHECKS_LOG=off
 # turns it off. Logging is best effort: a failure is silent and never changes
 # the exit code or the output.
@@ -435,6 +438,19 @@ origin_repo() {
   printf '"%s/%s"' "$owner" "$name"
 }
 
+# runner_digest — this file's sha256, first 12 hex digits, as a JSON string,
+# or null when no hash tool answers.
+runner_digest() {
+  local self=${BASH_SOURCE[0]} sum
+  sum=$( { sha256sum -- "$self" || shasum -a 256 -- "$self"; } 2>/dev/null) || sum=""
+  sum=${sum%% *}
+  sum=${sum:0:12}
+  case "$sum" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '"%s"' "$sum" ;;
+    *) printf null ;;
+  esac
+}
+
 log_run() {
   local log=${AGENT_CHECKS_LOG:-} base ts line
   [ "$log" = off ] && return 0
@@ -444,8 +460,8 @@ log_run() {
     log=$base/agent-checks/runs.jsonl
   fi
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || return 0
-  line=$(printf '{"v":1,"ts":"%s","event":"%s","repo":%s,"checks":%s,"failed":%s}' \
-    "$ts" "$event" "$(origin_repo)" "$(json_ids "$ran_ids")" "$(json_ids "$failed_ids")")
+  line=$(printf '{"v":1,"ts":"%s","event":"%s","repo":%s,"checks":%s,"failed":%s,"runner":%s}' \
+    "$ts" "$event" "$(origin_repo)" "$(json_ids "$ran_ids")" "$(json_ids "$failed_ids")" "$(runner_digest)")
   (
     mkdir -p -- "$(dirname -- "$log")" || exit 0
     { [ ! -e "$log" ] || [ -f "$log" ]; } || exit 0
