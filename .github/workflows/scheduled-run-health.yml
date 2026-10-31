@@ -45,6 +45,6 @@ jobs:
     # 2026-10-31 addendum). A cross-repo reusable takes a full commit sha.
     # The audit scripts still come from cms-platform, at the release named
     # in _agent-guidance's .github/health-audit-platform-ref.
-    uses: Adam-S-Daniel/_agent-guidance/.github/workflows/scheduled-run-health-reusable.yml@f7b15688b7d04b48c546eeadc033d30605fe156f
+    uses: Adam-S-Daniel/_agent-guidance/.github/workflows/scheduled-run-health-reusable.yml@725400664dd84021b3fcd717e213e5994d0b20ff
     with:
       dry_run: ${{ github.event_name == 'workflow_dispatch' && fromJSON(inputs.dry_run) || false }}
