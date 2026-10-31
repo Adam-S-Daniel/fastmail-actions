@@ -38,6 +38,13 @@ permissions:
 
 jobs:
   audit:
-    uses: Adam-S-Daniel/cms-platform/.github/workflows/scheduled-run-health.yml@v0.1.164
+    # _agent-guidance's lockfile-safe copy, not cms-platform's reusable: a
+    # reusable is covered by the lockfile of the repo that defines it, and
+    # cms-platform has none, so since 2026-10-28 calling it from this
+    # lockfile repo startup-failed every day (_agent-guidance ADR 0024's
+    # 2026-10-31 addendum). A cross-repo reusable takes a full commit sha.
+    # The audit scripts still come from cms-platform, at the release named
+    # in _agent-guidance's .github/health-audit-platform-ref.
+    uses: Adam-S-Daniel/_agent-guidance/.github/workflows/scheduled-run-health-reusable.yml@f7b15688b7d04b48c546eeadc033d30605fe156f
     with:
       dry_run: ${{ github.event_name == 'workflow_dispatch' && fromJSON(inputs.dry_run) || false }}
