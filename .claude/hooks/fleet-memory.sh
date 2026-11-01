@@ -66,10 +66,16 @@
 # A developer's own global instructions are theirs; everything outside the
 # markers is preserved. Normal mode orders deliveries by the payload's last
 # commit time (or its mtime when dirty) so an older checkout cannot replace a
-# newer version. The `fleet-guidance-delivered` marker records that integer
-# epoch beside the version in normal-mode blocks. A tie favors this checkout;
-# the same hash only refreshes an older stamp. Replacements are atomic and
-# follow destination symlinks.
+# newer version. A caller whose payload has no checkout passes the time of the
+# commit the payload was taken from (a plugin passes the committer time of the
+# `main` commit it downloaded base.md from) as FLEET_GUIDANCE_PAYLOAD_STAMP
+# (decimal epoch seconds) beside FLEET_GUIDANCE_PAYLOAD. A value that is not
+# decimal, has more than 10 digits, or is more than a day in the future is
+# ignored, and so is the stamp when --workspace picked another payload. The
+# `fleet-guidance-delivered` marker records that integer epoch beside the
+# version in normal-mode blocks. A tie favors this checkout; the same hash only
+# refreshes an older stamp. Replacements are atomic and follow destination
+# symlinks.
 #
 # CODEX CLOUD MODE
 # ----------------
@@ -441,6 +447,9 @@ normalize_stamp() {
         NORMAL_STAMP="${NORMAL_STAMP:1}"
     done
 }
+# A payload with no checkout stamps zero here; the caller can supply the time of
+# the commit the payload was taken from as FLEET_GUIDANCE_PAYLOAD_STAMP (see
+# the normal-path use below).
 payload_stamp() {
     local source="$1" source_dir source_name git_worktree status stamp=0
     source_dir="$(dirname "$source")"
@@ -946,8 +955,38 @@ emit_payload() {
 }
 
 # See docs/decisions/0016-the-freshest-delivery-wins-the-shared-global-block.md.
-payload_stamp "$PAYLOAD"
-delivered="$PAYLOAD_STAMP"
+# A caller whose payload has no checkout supplies the time of the commit the
+# payload was taken from. The stamp describes the caller's file, so it applies
+# only when that file is the payload in use (--workspace did not pick a child),
+# only when it is all ASCII digits, and only when it is plausible: the installed
+# stamp never decreases, so one implausible value (a millisecond epoch, a
+# YYYYMMDDhhmmss date) would keep every later delivery out. Epoch seconds are
+# 10 digits, and a stamp later than now + 86400 is not a commit time. A rejected
+# value, or a clock that cannot be read, behaves exactly as an unset stamp.
+caller_stamp="${FLEET_GUIDANCE_PAYLOAD_STAMP:-}"
+case "$caller_stamp" in ""|*[!0-9]*) caller_stamp="" ;; esac
+if [ -n "$caller_stamp" ] && [ -n "${FLEET_GUIDANCE_PAYLOAD:-}" ] &&
+    [ "$PAYLOAD" = "${FLEET_GUIDANCE_PAYLOAD:-}" ]; then
+    normalize_stamp "$caller_stamp"
+    caller_stamp="$NORMAL_STAMP"
+    stamp_now="$(date +%s 2>/dev/null)" || stamp_now=""
+    case "$stamp_now" in ""|*[!0-9]*) stamp_now="" ;; esac
+    # Both sides are at most 10 digits before any arithmetic, so it cannot
+    # overflow, and 10# keeps a padded clock value from reading as octal.
+    if [ "${#caller_stamp}" -gt 10 ] || [ -z "$stamp_now" ] ||
+        [ "${#stamp_now}" -gt 10 ] ||
+        stamp_gt "$caller_stamp" "$((10#$stamp_now + 86400))"; then
+        caller_stamp=""
+    fi
+else
+    caller_stamp=""
+fi
+if [ -n "$caller_stamp" ]; then
+    delivered="$caller_stamp"
+else
+    payload_stamp "$PAYLOAD"
+    delivered="$PAYLOAD_STAMP"
+fi
 
 # Read metadata from inside the managed block only. A developer's own prose
 # may mention either marker text without being delivery metadata.
