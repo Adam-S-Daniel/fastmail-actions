@@ -37,6 +37,14 @@ line:
 
 No verdict at all means the hook never ran — treat that as DEGRADED.
 
+**Say what loaded, in your first reply to the user in a session.** The
+installed guidance ends with a line `fleet-guidance check value: <8 hex>`.
+Begin that reply with `fleet-guidance check: <the value>`, copied from that
+line, or `fleet-guidance check: none` when no such line is in your context.
+Never guess a value or copy one from anywhere else: the session's record
+compares it with what actually loaded. Only in replies to the user — never in
+commits, PR or issue text, files or prompts for other agents.
+
 ## Codex reads the same block, from `~/.codex/AGENTS.md`
 
 The hook writes the same block there whenever `~/.codex` exists. Setup for

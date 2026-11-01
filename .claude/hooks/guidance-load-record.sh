@@ -32,17 +32,42 @@
 #   {"v":1,"ts":"2026-10-31T12:00:00Z","kind":"guidance-load",
 #    "session":"<16 hex>","surface":"cli","remote":false,"cli":"2.1.312",
 #    "state":"full","repos":2,"guidance_version":"0123abcd",
+#    "check_expected":true,"check_reported":"match",
 #    "registry_sha":null,"uploaded":null}
 # `session` is a sha256 prefix of the session id, never the id. `surface` and
 # `cli` are the transcript's own `entrypoint` and `version`. `repos` counts the
 # distinct directories holding a Project-type AGENTS.md or CLAUDE.md (a
 # `<repo>/.claude/CLAUDE.md` counts as `<repo>`). `guidance_version` is the
-# 8-hex id fleet-memory.sh wrote into user memory's CLAUDE.md. `registry_sha`
+# 8-hex id fleet-memory.sh wrote into user memory's CLAUDE.md. `check_expected`
+# and `check_reported` are described under THE CHECK VALUE below. `registry_sha`
 # is always null for now: skills-bootstrap.sh's install record
 # (~/.claude/skills/.skills-bootstrap-installed.json) stores each skill's
 # name, registry URL, bundle and digest, but no commit, so there is nothing to
 # read it from. `uploaded` is true or false when an upload was tried, null when
 # it was not. No paths, names, titles or file content are ever recorded.
+#
+# THE CHECK VALUE
+# ---------------
+# A session can claim "full guidance loaded" without it being true. So the block
+# fleet-memory.sh installs ends with a plain-text line
+# `fleet-guidance check value: <8 hex>` that exists nowhere else (see CHECK
+# VALUE in that hook), and the repo stub asks the session to begin its first
+# reply to the user with `fleet-guidance check: <value>`, or
+# `fleet-guidance check: none` when it saw no such line. Two fields compare the
+# two, and neither holds a value string:
+#   check_expected  true when some loaded User-type instruction file has a line
+#                   matching ^fleet-guidance check value: ([0-9a-f]{8})$; false
+#                   when none does; null when the state is `unknown`. Only User
+#                   files count: a repo file cannot supply the expected value.
+#   check_reported  the first `fleet-guidance check: (<8 hex>|none)` found in
+#                   the assistant's text blocks, in transcript order:
+#                   match     the hex equals the expected value;
+#                   mismatch  a hex, and no expected value or a different one;
+#                   none      the session said it saw no check line;
+#                   absent    no report line in any assistant text so far.
+# The transcript is read as parsed JSON, entry by entry, never searched as raw
+# text. The record is written once, at the first Stop that has something to
+# record, so `absent` means "not by then".
 #
 # UPLOAD (cloud only, optional)
 # -----------------------------
@@ -112,6 +137,8 @@ REPO = "Adam-S-Daniel/adam-agentskills-private"
 BRANCH = "persistent/usage-events"
 FULL = ("guidance-marker: fleet-full", "## Working in these repos")
 STUB = ("guidance-marker: fleet-stub", "Fleet guidance is delivered once per session")
+CHECK_LINE = re.compile(r"^fleet-guidance check value: ([0-9a-f]{8})$", re.MULTILINE)
+REPORT = re.compile(r"fleet-guidance check: ([0-9a-f]{8}|none)\b")
 ISO = "%Y-%m-%dT%H:%M:%SZ"
 START = time.monotonic()
 BUDGET = 15.0
@@ -137,9 +164,26 @@ def state_dir():
     return os.path.join(base, "fleet-guidance")
 
 
+def first_report(message):
+    """The first check report in one assistant message's text blocks, or None."""
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+    else:
+        return None
+    for text in texts:
+        found = REPORT.search(text) if isinstance(text, str) else None
+        if found:
+            return found.group(1)
+    return None
+
+
 def read_transcript(path):
-    """(instruction files, entrypoint, cli version, assistant responses)."""
-    files, surface, cli, assistant = None, None, None, set()
+    """(instruction files, entrypoint, cli version, assistant responses, first
+    check report: 8 hex, "none" or None)."""
+    files, surface, cli, assistant, report = None, None, None, set(), None
     with open(path, encoding="utf-8", errors="replace") as handle:
         for raw in handle:
             try:
@@ -157,6 +201,8 @@ def read_transcript(path):
                 message = entry.get("message")
                 mid = message.get("id") if isinstance(message, dict) else None
                 assistant.add(mid if isinstance(mid, str) else ("line", len(assistant)))
+                if report is None:
+                    report = first_report(message)
             elif kind == "attachment":
                 att = entry.get("attachment")
                 if isinstance(att, dict) and att.get("type") == "instructions":
@@ -164,7 +210,7 @@ def read_transcript(path):
                     files = files or []
                     if isinstance(listed, list):
                         files += [f for f in listed if isinstance(f, dict)]
-    return files, surface, cli, len(assistant)
+    return files, surface, cli, len(assistant), report
 
 
 def classify(files):
@@ -174,6 +220,26 @@ def classify(files):
     if any(sig in t for t in texts for sig in STUB):
         return "stub-only"
     return "neither"
+
+
+def expected_check(files):
+    """The check value in the first User-type instruction file that has one."""
+    for f in files:
+        content = f.get("content")
+        if f.get("type") == "User" and isinstance(content, str):
+            found = CHECK_LINE.search(content)
+            if found:
+                return found.group(1)
+    return None
+
+
+def check_outcome(expected, report):
+    """The check_reported enum. Neither argument is ever recorded itself."""
+    if report is None:
+        return "absent"
+    if report == "none":
+        return "none"
+    return "match" if expected is not None and report == expected else "mismatch"
 
 
 def repo_count(files):
@@ -406,15 +472,17 @@ def main():
     if os.path.exists(flag):
         return
     try:
-        files, surface, cli, responses = read_transcript(transcript)
+        files, surface, cli, responses, report = read_transcript(transcript)
     except OSError:
         return
     if files is None:
         if responses < 3:
             return
-        state, repos = "unknown", 0
+        state, repos, expected, check_expected = "unknown", 0, None, None
     else:
         state, repos = classify(files), repo_count(files)
+        expected = expected_check(files)
+        check_expected = expected is not None
 
     os.makedirs(os.path.dirname(flag), exist_ok=True)
     try:
@@ -435,6 +503,8 @@ def main():
         "state": state,
         "repos": repos,
         "guidance_version": guidance_version(),
+        "check_expected": check_expected,
+        "check_reported": check_outcome(expected, report),
         "registry_sha": None,
     }
     line = json.dumps(record, separators=(",", ":"))
