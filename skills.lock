@@ -1,21 +1,21 @@
 {
   "registry": "Adam-S-Daniel/adam-agentskills",
-  "ref": "4755ca0a113f12610810c8bcef2d0634bd593e08",
+  "ref": "c0030df6f6306950a23c4e4e948f106ed62b2546",
   "bundles": [
     "adam-anything-anywhere",
     "adam-coding-anywhere"
   ],
   "skills": {
-    "adam-anything-anywhere/finding-unknowns": "sha256:a67b7663b5b44d07cfddeb923ce19f3cf79447e052658a69cf7fcb985fc0130d",
-    "adam-anything-anywhere/writing-adrs": "sha256:4e9a4b9472bd3d92501bf0d7f882544ba66e8b03aa48bac7fa1689c45d903820",
-    "adam-coding-anywhere/ci-job-performance": "sha256:0404051206253de268ac1a1b87c23db0454faaf284710522a0b2b942b1c631d6",
-    "adam-coding-anywhere/debug-github-workflows": "sha256:7f6795529d048ae54534e929989abb52c2d11e7f7e4a55964fdabd7d49d9c260",
-    "adam-coding-anywhere/disarm-inherited-reach": "sha256:3e355e35d7012c34d475711e8b438bfc5075deb92982b7561e1f9bb40054b893",
-    "adam-coding-anywhere/github-actions-repo-settings": "sha256:6b634b528b046a12a6f289cd6cfa2d019c96bcc498f625494ece9a1d375d1ffa",
+    "adam-anything-anywhere/finding-unknowns": "sha256:a0890dcbc419a8e6bfe007b9fbffa01d76e8dfb1d15f21768b6a0b8ccf48a715",
+    "adam-anything-anywhere/writing-adrs": "sha256:88722a1b11d7def8b6927c81e99a2774e9f2748174bf9d7d3116f1091a26b7e3",
+    "adam-coding-anywhere/ci-job-performance": "sha256:626243e258879e440f2973af362808534445492feb44e609368db2468945c3f3",
+    "adam-coding-anywhere/debug-github-workflows": "sha256:11725318c8c08cb2fee7075b3b5862a37fc21f5c8cec4d6b43de45c3a2bcca56",
+    "adam-coding-anywhere/disarm-inherited-reach": "sha256:0be479e716d574d8b2ef9868ad9a9d8c4b67413b98d5cf0ae331c79efc511ce2",
+    "adam-coding-anywhere/github-actions-repo-settings": "sha256:b8d280f4811efcb5a95536272263a635299f8665e86ca9295eb94f7a9b5e130a",
     "adam-coding-anywhere/review-bash-ci-reliability": "sha256:fc025b6ccc11282445b6ce1a465b1e80e2fbcbca3cbb66fc9ee1cdfce04dfe2c",
-    "adam-coding-anywhere/skills-doctor": "sha256:9e84c71d467cd6c87c84c6cd69ecf6af09f97b505302c5f560577f6edc14069a",
+    "adam-coding-anywhere/skills-doctor": "sha256:3c422b91ae2bafbceb52e9deb12e9bd58ef5f6b35726d3b792a47bf018d352d7",
     "adam-coding-anywhere/vendor-release-impact-issues": "sha256:b7bc6f17c002a05b5c5c517ddf598c717820ef808d5d240a5e8e9d6e68a7c426",
-    "adam-coding-anywhere/workflow-path-audit": "sha256:8a7c57bcd890bbab38c42473d8705f0b2521954385f03bf5289e3ec84d3fcdde"
+    "adam-coding-anywhere/workflow-path-audit": "sha256:09be56481068793c7cc18512189c7a1c3fe7eb4eac23edb7a87ea0d71c056f3e"
   },
-  "generated_from": "4755ca0a113f12610810c8bcef2d0634bd593e08"
+  "generated_from": "c0030df6f6306950a23c4e4e948f106ed62b2546"
 }
