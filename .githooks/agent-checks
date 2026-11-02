@@ -16,6 +16,12 @@
 #   agent-checks ci <base> <head>
 #   agent-checks tree [<rev>]                (every path in <rev>, default HEAD)
 #
+# `ci` also runs pr-tldr when GitHub Actions starts it for a pull request
+# (GITHUB_EVENT_NAME pull_request or pull_request_target, with
+# GITHUB_EVENT_PATH set): the pull request's description must begin with a
+# TLDR heading and text under it. It reads only the event payload, never the
+# API or the network; see "PR description: pr-tldr" below.
+#
 # `tree` is for measuring a check against a repo's whole current tree, so a new
 # check can be shown to refuse nothing already on a fleet repo's main.
 #
@@ -302,6 +308,114 @@ run_dated_phrasing() {
   return 0
 }
 
+# ── PR description: pr-tldr ──────────────────────────────────────────────────
+# Every pull request description begins with a plain-English TLDR, so a reader
+# learns what changes and why before the detail. In the ci event of a
+# pull_request or pull_request_target run, with GITHUB_EVENT_PATH set, the
+# check reads the event payload GitHub wrote there (the pull request's body,
+# its author's type and its creation time) with node, and nothing else: no
+# API call, no network. A missing node or a payload it cannot read or parse
+# refuses (fail closed). Any other event, or no GITHUB_EVENT_PATH, skips it.
+#
+# The rule is lexical, so it gives the same answer every time:
+#   1. CRLF becomes LF; every HTML comment (<!-- ... -->, across lines too) is
+#      removed, and an unclosed <!-- hides everything after it, as GitHub
+#      renders it.
+#   2. Leading lines that are blank, or a "_Requested by ..._" attribution
+#      line, are skipped.
+#   3. The first line left must be an ATX heading whose text is TLDR or TL;DR
+#      (any case, an optional colon): "## TLDR", "# tl;dr:".
+#   4. Some line between it and the next heading (or the end) has text.
+#
+# The payload is the description as it was when the run started: re-running
+# an old run reads the old text. The workflow's `edited` pull_request trigger
+# is what re-runs the check after the description changes.
+#
+# Pull requests opened before the rule shipped are exempt, so an open one is
+# not retro-failed: pr_tldr_cutoff is that moment.
+pr_tldr_cutoff=2026-11-03T00:00:00Z
+
+# pr_tldr_warn <message> — a warning line on stderr, never a refusal.
+pr_tldr_warn() {
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    printf '::warning::agent-checks (warning): %s\n' "$1" >&2
+  else
+    printf 'agent-checks (warning): %s\n' "$1" >&2
+  fi
+}
+
+run_pr_tldr() {
+  local verdict why msg js
+  case "${GITHUB_EVENT_NAME:-}" in
+    pull_request|pull_request_target) ;;
+    *) return 0 ;;
+  esac
+  [ -n "${GITHUB_EVENT_PATH:-}" ] || return 0
+  note_ran pr-tldr
+  if ! command -v node > /dev/null 2>&1; then
+    problem pr-tldr "pull request description: node is not on PATH, so the TLDR rule could not read the event payload and nothing was checked. Run this check where Node.js is installed (every GitHub-hosted runner has it)."
+    return 0
+  fi
+  # The script prints "<verdict> <author>": verdict ok, exempt, missing or
+  # empty; author bot or user. It exits nonzero when the payload cannot be
+  # read. It is held in a variable and fed on stdin, not written as a here-doc
+  # inside $( ), which older bash (macOS's 3.2) can misparse.
+  IFS= read -r -d '' js <<'JS' || true
+const fs = require("fs");
+const [file, cutoff] = process.argv.slice(2);
+let pr;
+try {
+  pr = JSON.parse(fs.readFileSync(file, "utf8")).pull_request;
+} catch (err) {
+  process.exit(3);
+}
+if (!pr || typeof pr !== "object") process.exit(3);
+const author = pr.user && pr.user.type === "Bot" ? "bot" : "user";
+const created = typeof pr.created_at === "string" ? Date.parse(pr.created_at) : NaN;
+if (!Number.isNaN(created) && created < Date.parse(cutoff)) {
+  console.log("exempt " + author);
+  process.exit(0);
+}
+let body = typeof pr.body === "string" ? pr.body : "";
+body = body.replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?-->/g, "");
+const open = body.indexOf("<!--");
+if (open >= 0) body = body.slice(0, open);
+const lines = body.split("\n");
+let i = 0;
+while (i < lines.length && (/^\s*$/.test(lines[i]) || /^_Requested by .+_\s*$/.test(lines[i]))) i++;
+const tldr = /^ {0,3}#{1,6}[ \t]+TL;?DR[ \t]*:?[ \t]*#*[ \t]*$/i;
+const heading = /^ {0,3}#{1,6}([ \t]|$)/;
+let verdict = "missing";
+if (i < lines.length && tldr.test(lines[i])) {
+  verdict = "empty";
+  for (let j = i + 1; j < lines.length && !heading.test(lines[j]); j++) {
+    if (/\S/.test(lines[j])) {
+      verdict = "ok";
+      break;
+    }
+  }
+}
+console.log(verdict + " " + author);
+JS
+  verdict=$(node - "$GITHUB_EVENT_PATH" "$pr_tldr_cutoff" <<< "$js" 2> /dev/null) || verdict=""
+  case "$verdict" in
+    "ok "*|"exempt "*) return 0 ;;
+    "missing "*) why="it does not begin with a TLDR heading" ;;
+    "empty "*) why="its TLDR heading has no text under it" ;;
+    *)
+      problem pr-tldr "pull request description: the event payload at GITHUB_EVENT_PATH could not be read as a pull request event (unreadable, not JSON, or no pull_request object), so the TLDR rule was not checked. Re-run the check; if it fails again, the runner's event file is broken."
+      return 0 ;;
+  esac
+  msg="pull request description: $why. The pull request description must begin with a \"## TLDR\" heading followed by one to three plain-English sentences on what changes and why. Only HTML comments and a \"_Requested by ..._\" attribution line may come before it. Edit the description: editing it re-runs this check (re-running an old run does not, because it reads the description as it was when that run started)."
+  # A bot's pull request (Dependabot, a GitHub App, github-actions) is warned,
+  # not refused: this is the one place that decides it.
+  if [ "${verdict#* }" = bot ]; then
+    pr_tldr_warn "$msg The author is a bot, so this is a warning, not a refusal."
+    return 0
+  fi
+  problem pr-tldr "$msg"
+}
+
 # run_checks — the fleet checks, then the repo's own, over the same
 # NUL-separated path list on stdin, then the warning pass.
 run_checks() {
@@ -395,6 +509,7 @@ case "$event" in
     else
       run_checks < <(paths_in_range -1 "$head")
     fi
+    run_pr_tldr
     ;;
 
   tree)

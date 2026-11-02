@@ -189,6 +189,13 @@ Explain a merge, close or label change in a marked comment.
 **Never submit an APPROVE review**: it cannot be marked. The
 `github-write-marker.sh` hook enforces it.
 
+## PR descriptions open with a TLDR
+
+Start every PR description with a `## TLDR` heading and one to three
+plain-English sentences on what changes and why. Only an attribution block
+(HTML comments, a `_Requested by …_` line) may precede it. `agent-checks`
+fails a PR without it; editing the description re-runs the check.
+
 ## A GitHub 404 means "not authorized", not "not there"
 
 GitHub answers 404, not 403, to a caller not allowed to know a private repo
