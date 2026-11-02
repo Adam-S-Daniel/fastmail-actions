@@ -93,7 +93,10 @@
 # never by "delete whatever I do not recognise": that directory is the user's
 # own, and the claude.ai account-sync channel writes into it too. See "skills
 # that have LEFT the lock" near the bottom for the four conditions a removal
-# needs and the one contention case this deliberately does not resolve.
+# needs and the one contention case this deliberately does not resolve. Each
+# entry also carries `ref`, the commit its source resolved to (null when
+# unknown), and the record lists the distinct (registry, ref) pairs as
+# `sources`; both are informational and no removal reads them.
 #
 # Fails SOFT within its own execution: every failure path below emits a verdict
 # naming the exact file or binary at fault and exits 0, because a hook that
@@ -2371,6 +2374,24 @@ fetch_source () {
   fi
 }
 
+# source_commit <checkout> <ref> — the commit a fetched source resolved to, for
+# the install record: 40 lowercase hex, or empty when it cannot be shown.
+# A full-SHA ref is what was checked out, so it needs no git process. Otherwise
+# HEAD is read with an explicit `--git-dir`, which turns off repository
+# discovery, so a checkout missing its `.git` fails rather than resolving an
+# enclosing repository's HEAD; GIT_CEILING_DIRECTORIES is only a second guard.
+source_commit () {
+  local dest="$1" ref="$2" commit=""
+  if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+    commit="$ref"
+  else
+    commit="$(GIT_CEILING_DIRECTORIES="${dest%/*}" run_git --git-dir="$dest/.git" \
+      rev-parse --verify -q 'HEAD^{commit}' 2>>"$LOG" </dev/null)" || commit=""
+  fi
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || commit=""
+  printf '%s' "$commit"
+}
+
 # --- read the framed source + skill records --------------------------------
 # Records are NUL-delimited (never split on a field's own bytes) and python
 # states its record counts in `meta` up front, so bash can DETECT a desync
@@ -2561,6 +2582,7 @@ fi
 
 SRC_SHORT=()
 SRC_OK=()
+SRC_COMMIT=()    # resolved commit per source, "" when failed or unknown
 SRC_LOST=()      # ", "-joined skill names a failed source could not supply
 SRC_LOST_N=()
 fetched=0
@@ -2576,9 +2598,11 @@ while [ "$index" -lt "${#SRC_NAME[@]}" ]; do
   SRC_SHORT+=("$short"); SRC_LOST+=(""); SRC_LOST_N+=(0)
   if fetch_source "$tmp/reg-$index" "$url" "$ref"; then
     SRC_OK+=(1)
+    SRC_COMMIT+=("$(source_commit "$tmp/reg-$index" "$ref")")
     fetched=$((fetched + 1))
   else
     SRC_OK+=(0)
+    SRC_COMMIT+=("")
     unreachable+=("${name}@${ref}")
   fi
   echo "source[$index] name=$name ref=$ref layout=$layout ok=${SRC_OK[$index]}" >>"$LOG"
@@ -3065,13 +3089,23 @@ RECORD="$DEST/.skills-bootstrap-installed.json"
 # the loop below may `rm -rf`, so a `json.py` or `re.py` in the project dir must
 # not be what reads and validates it.
 RECORD_PATH="$RECORD" TMP_DIR="$tmp" python3 -I - >>"$LOG" 2>&1 <<'RECORDED_PY'
-import json, os, re, sys
+import json, os, re, stat, sys
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 
+
+def open_nonblocking(path, flags):
+    # A FIFO left at the record's path would block a plain open until a writer
+    # appeared; non-blocking, it opens at once and the fstat below refuses it.
+    return os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
+
+
 try:
-    with open(os.environ["RECORD_PATH"], encoding="utf-8") as handle:
+    with open(os.environ["RECORD_PATH"], encoding="utf-8",
+              opener=open_nonblocking) as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            sys.exit(3)
         record = json.load(handle)
 except FileNotFoundError:
     record = {"installed": []}          # first run: nothing was ever recorded
@@ -3339,6 +3373,9 @@ while IFS= read -r -d '' key \
     # the lock stops naming it) from "somebody else's, or edited" (never).
     printf '%s\0%s\0%s\0%s\0' \
       "$name" "${SRC_URL[$index]}" "${key%%/*}" "$want" >>"$tmp/installed.nul"
+    # Its source commit, in a stream of its own that only the record writer
+    # reads: a short or missing one can drop refs and nothing else.
+    printf '%s\0%s\0' "$name" "${SRC_COMMIT[$index]}" >>"$tmp/installed_refs.nul"
     if [ -n "$contest_won_at" ]; then WON_OK[contest_won_at]=1; fi
   else
     # Integrity FAILED: leave nothing behind. The unverified bytes must not
@@ -3444,7 +3481,7 @@ record_unwritable=0
 # in the project directory would otherwise be what decides which of the user's
 # directories this hook is about to `rm -rf`.
 if ! RECORD_PATH="$RECORD" TMP_DIR="$tmp" python3 -I - >>"$LOG" 2>&1 <<'PLAN_PY'
-import json, os, re, sys
+import json, os, re, stat, sys
 
 record_path = os.environ["RECORD_PATH"]
 tmp_dir = os.environ["TMP_DIR"]
@@ -3482,8 +3519,15 @@ locked = {key.rsplit("/", 1)[-1]
           in read_records(os.path.join(tmp_dir, "skills.nul"), 5)}
 claims = set(read_records(os.path.join(tmp_dir, "claims.nul"), 2))
 
+def open_nonblocking(path, flags):
+    # As in the install-record reader: a FIFO opens at once and is refused.
+    return os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
+
+
 try:
-    with open(record_path, encoding="utf-8") as handle:
+    with open(record_path, encoding="utf-8", opener=open_nonblocking) as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            sys.exit(3)
         record = json.load(handle)
 except FileNotFoundError:
     record = {"installed": []}          # first run: nothing was ever recorded
@@ -3591,11 +3635,18 @@ fi
 # sharing a destination an error — and this run's install wins the key, since it
 # is what just wrote those bytes.
 #
+# Each entry also records `ref`: for this run's installs, the commit its source
+# resolved to (installed_refs.nul); for a carried-forward entry, the previous
+# record's ref for that same name AND digest; otherwise null. `sources` lists
+# the distinct (registry, ref) pairs behind non-null refs. Refs are
+# informational, so any failure reading them drops refs and nothing else.
+#
 # Staged in $DEST and moved into place with os.replace: a crashed or half-written
 # run leaves the PREVIOUS record intact rather than a truncated one, and the
 # write can never follow a symlink left at that path. Carries no timestamp —
-# two runs installing the same thing must produce a byte-identical file, or
-# every session start would rewrite it for nothing.
+# two runs installing the same thing must produce a byte-identical file — and
+# when the existing record is a regular file with exactly those bytes it is
+# left untouched, so its mtime and inode do not move on an unchanged run.
 #
 # It is rewritten even when the record could not be READ, which is what makes
 # that state self-healing in one run. The cost is that entries from before the
@@ -3603,10 +3654,12 @@ fi
 # left alone forever rather than removed — the safe direction of the same rule:
 # what this hook cannot show it installed, it does not delete.
 if ! RECORD_PATH="$RECORD" TMP_DIR="$tmp" python3 -I - >>"$LOG" 2>&1 <<'RECORD_PY'
-import json, os, tempfile
+import json, os, re, stat, tempfile
 
 record_path = os.environ["RECORD_PATH"]
 tmp_dir = os.environ["TMP_DIR"]
+COMMIT = re.compile(r"[0-9a-f]{40}")
+PREVIOUS_LIMIT = 1024 * 1024
 
 
 def read_records(path, width):
@@ -3622,24 +3675,85 @@ def read_records(path, width):
             for at in range(0, len(fields) - width + 1, width)]
 
 
+def read_regular(path, limit):
+    """`path`'s bytes if it is a regular file of at most `limit` bytes, else None.
+
+    lstat first, so a FIFO is never opened and a symlink never followed; the
+    non-blocking open and the fstat after it cover a swap between the two.
+    """
+    try:
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            return None
+        flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        with os.fdopen(os.open(path, flags), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None
+            data = handle.read(limit + 1)
+    except OSError:
+        return None
+    return data if len(data) <= limit else None
+
+
+# This run's source commit per installed name, from complete NUL-terminated
+# (name, ref) pairs only: an unterminated trailing field is dropped.
+try:
+    with open(os.path.join(tmp_dir, "installed_refs.nul"), encoding="utf-8") as handle:
+        fields = handle.read().split("\0")[:-1]
+    refs = {fields[at]: fields[at + 1] for at in range(0, len(fields) - 1, 2)
+            if COMMIT.fullmatch(fields[at + 1])}
+except Exception:
+    refs = {}
+
+# The previous record's refs, keyed by (name, digest), for carried-forward
+# entries. Any failure here means no carry-over, never a failed write.
+carried = {}
+try:
+    previous = read_regular(record_path, PREVIOUS_LIMIT)
+    if previous is not None:
+        for entry in json.loads(previous)["installed"]:
+            if not isinstance(entry, dict):
+                continue
+            name, digest, ref = entry.get("name"), entry.get("digest"), entry.get("ref")
+            if (isinstance(name, str) and isinstance(digest, str)
+                    and isinstance(ref, str) and COMMIT.fullmatch(ref)):
+                carried[(name, digest)] = ref
+except Exception:
+    carried = {}
+
 entries = {}
 # Carried-forward first, this run's installs second, so a name claimed by both
 # resolves to the run that actually wrote the directory.
-for name, registry, bundle, digest in (
-        read_records(os.path.join(tmp_dir, "keep.nul"), 4)
-        + read_records(os.path.join(tmp_dir, "installed.nul"), 4)):
-    entries[name] = {"name": name, "registry": registry,
-                     "bundle": bundle, "digest": digest}
+for name, registry, bundle, digest in read_records(
+        os.path.join(tmp_dir, "keep.nul"), 4):
+    entries[name] = {"name": name, "registry": registry, "bundle": bundle,
+                     "digest": digest, "ref": carried.get((name, digest))}
+for name, registry, bundle, digest in read_records(
+        os.path.join(tmp_dir, "installed.nul"), 4):
+    entries[name] = {"name": name, "registry": registry, "bundle": bundle,
+                     "digest": digest, "ref": refs.get(name)}
 
-payload = {"version": 1, "installed": [entries[name] for name in sorted(entries)]}
+installed = [entries[name] for name in sorted(entries)]
+sources = sorted({(entry["registry"], entry["ref"])
+                  for entry in installed if entry["ref"] is not None})
+payload = {"version": 1, "installed": installed,
+           "sources": [{"registry": registry, "ref": ref}
+                       for registry, ref in sources]}
+# LF only: the install record is a JSON artifact a human reads and another
+# run parses. Its bytes should not depend on which platform wrote it.
+data = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+
+# Unchanged: leave the existing file alone rather than replace it with a copy.
+if read_regular(record_path, len(data)) == data:
+    raise SystemExit(0)
+
 directory = os.path.dirname(record_path) or "."
 staged_fd, staged = tempfile.mkstemp(
     dir=directory, prefix=".skills-bootstrap-installed.", suffix=".tmp")
 try:
-    # LF only: the install record is a JSON artifact a human reads and another
-    # run parses. Its bytes should not depend on which platform wrote it.
-    with os.fdopen(staged_fd, "w", encoding="utf-8", newline="") as handle:
-        handle.write(json.dumps(payload, indent=2) + "\n")
+    with os.fdopen(staged_fd, "wb") as handle:
+        handle.write(data)
     os.replace(staged, record_path)
 except BaseException:
     try:
