@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # guidance-load-record.sh — one line per session: did Claude Code load the FULL
-# fleet guidance, or only the repo stub?
+# fleet guidance, or only the repo stub? And, in cloud sessions only, one line
+# per skill use naming the skill copy it loaded (phase 2, ADR 0036), sent to
+# the private store and nowhere else.
 #
 # WHAT IT COUNTS
 # --------------
@@ -52,8 +54,9 @@
 # the cap. Both are null when the install record is missing, not a regular
 # file, over 1 MiB, unreadable, or has no `sources` list (installs before
 # _agent-guidance#398 had none). `uploaded` is true or false when an upload was
-# tried, null when it was not. Apart from registry owner/repo names, no paths,
-# names, titles or file content are ever recorded.
+# tried, null when it was not. Apart from registry owner/repo names, this
+# record holds no paths, names, titles or file content. (Phase 2's lines, below,
+# carry skill names, tool-use ids and digests, and go to the private store only.)
 #
 # THE CHECK VALUE
 # ---------------
@@ -96,9 +99,17 @@
 #    GitHub API path is not permitted through this proxy") while allowing a
 #    git push. So the hook first asks GET /repos/<repo> with no Authorization
 #    header, and when the answer is 200 with permissions.push true (the
-#    private repo is attached) it appends with git instead: a depth-1 clone of
-#    the branch into a private temp dir, one commit, one push, and on a
-#    rejected push one fresh clone and retry.
+#    private repo is attached) it appends with git instead, by plumbing only:
+#    a depth-1 `--no-checkout` clone of the branch into a private temp dir,
+#    the tip's tree read into a private index (`read-tree`, so the commit keeps
+#    every other file on the branch), `hash-object` and `update-index` for each
+#    changed file, `write-tree`, `commit-tree`, one push. A file that exists
+#    (`ls-tree`) and cannot be read (`cat-file`) aborts the upload rather than
+#    being overwritten. A rejected push fetches the new tip, rebuilds on it and
+#    pushes again until the deadline. When phase 2 has lines to send in the same
+#    Stop, both files go in that one commit; if that commit does not land and
+#    time remains, phase 1's file is tried again alone, so a phase-2 problem
+#    never costs phase 1's once-per-session record.
 # 2. A GitHub App, where no proxy rewrites the header: when
 #    USAGE_WRITER_APP_CLIENT_ID and USAGE_WRITER_APP_PEM (the PEM text, or that
 #    text base64-encoded) are set, an installation token minted from that App,
@@ -106,7 +117,56 @@
 # through `--config -` on stdin, never argv; the PEM is written to a 0600 file
 # in a private temp dir for openssl and removed. No token, PEM or response
 # body is ever printed. Every call has a 10-second cap, inside a 15-second
-# overall budget, under the 20-second hook timeout.
+# overall budget, under the 20-second hook timeout. Every subprocess gets
+# /dev/null for stdin and its own process group, which a timeout kills whole;
+# git runs with credential.interactive=never and core.hooksPath=/dev/null, and
+# keeps the machine's system and global config (the hosted proxy may rely on
+# them; the integrator's cloud probe ran with them). The temp root is resolved
+# once (a symlinked /tmp is fine) and the temp dir must resolve to a direct
+# child of it, or the upload is refused; this user's guidance-record.* dirs
+# left over 10 minutes ago are swept first.
+#
+# CLOUD SKILL RECORDS (phase 2, ADR 0036)
+# ---------------------------------------
+# Only when CLAUDE_CODE_REMOTE=true (CLAUDE_CODE_REMOTE_SESSION_ID alone is not
+# enough). Anywhere else nothing past that test runs: no file, no subprocess.
+# On EVERY Stop, before phase 1's once-per-session return, it reads the
+# transcript and this session's subagent transcripts
+# (<transcript dir>/<session id>/subagents/*.jsonl) from a per-file watermark:
+# complete lines only, entries whose sessionId is this session's, at most
+# 32 MiB per file (a 32 MiB stretch with no newline is skipped), reset to 0
+# when the file shrinks or is replaced. A use is a Skill tool_use (keyed on its
+# id) or a typed slash command (keyed on the entry's uuid). Its loaded copy is
+# the `Base directory for this skill: <path>` meta entry that links to it
+# (sourceToolUseID, or parentUuid for a typed command). The watermark never
+# passes a use that is not settled (no base directory, no tool result, no later
+# assistant turn yet). Each copy is resolved as skills-evals' LoadedCopies
+# does: where it lives, a 64-hex lock-kind digest (the #536 function, bound by
+# a shared test vector) or one of eight null reasons, the registry and commit
+# where known. A use whose timestamp does not parse is skipped, as the local
+# census skips it. A typed command with no base directory is kept only for a
+# built-in skill or a name skills-bootstrap.sh installed. Bounds per Stop: 50
+# uses, 1.5 s parsing, 3 s hashing, 4 s in all; a use the hash budget did not
+# reach holds the watermark. At most 2000 lines per session.
+#
+# Each use becomes one line in a local pending file, then, after phase 1, in
+#   events/<YYYY-MM of the use>/cloud-skills/<session>.jsonl
+# on the same private branch (no other destination; nothing reaches
+# sessions.jsonl), with exactly these keys:
+#   {"v":1,"id":"<tool_use id | entry uuid>","ts":"<use time, Z>","kind":"skill",
+#    "surface":"cloud","session":"<16 hex, as phase 1>","cli":"<version>"|null,
+#    "name":"<skill name>"|"invalid","base_kind":"<where the copy lives>",
+#    "registry":"<owner>/<repo>"|null,"ref":"<40 hex>"|null,
+#    "digest":"<64 hex>"|null,"digest_null_reason":"<reason>"|null}
+# No path (the base directory is resolved and dropped), title, prompt,
+# transcript text, cwd, machine name, raw session id, remote URL or credential
+# is ever written. The upload uses the git path above with the session's own
+# credential, and no App. A rejected push that runs out of time retries next
+# Stop; a network error, 5xx or timeout backs off 2 min, doubling to 64 min;
+# a definite no (403, 404, or push false) stops uploads for the session.
+# State lives in <state dir>/cloud-skills/ (0700, files 0600, opened with
+# O_NOFOLLOW): the watermarks, the pending lines and a lock taken without
+# waiting, never held across the network. A busy lock skips that Stop.
 #
 # ONCE PER SESSION, AND NEVER IN THE WAY
 # --------------------------------------
@@ -118,10 +178,14 @@
 # and always exits 0. No python3 means no record.
 #
 # Test seams: GUIDANCE_RECORD_NOW (an ISO 8601 UTC time, e.g.
-# 2026-10-31T12:00:00Z) replaces the clock; GUIDANCE_RECORD_API (default
-# https://api.github.com) replaces the API base URL; GUIDANCE_RECORD_GIT
-# (default https://github.com/Adam-S-Daniel/adam-agentskills-private) replaces
-# the git remote.
+# 2026-10-31T12:00:00Z) replaces the clock, phase 2's backoff included;
+# and, read only when GUIDANCE_RECORD_TEST=1 (a leaked value is ignored),
+# GUIDANCE_RECORD_API (default https://api.github.com) replaces the API base
+# URL; GUIDANCE_RECORD_GIT (default
+# https://github.com/Adam-S-Daniel/adam-agentskills-private) replaces the git
+# remote. GUIDANCE_RECORD_TEST_SCALE, read only when GUIDANCE_RECORD_TEST=1,
+# shrinks every time budget (the 15 s total, the 10 s call cap, phase 2's
+# 4/1.5/3/6 s caps and the backoff) by a factor in (0, 1]; it never grows one.
 
 exec 1>/dev/null 2>/dev/null
 
@@ -138,6 +202,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -156,7 +221,75 @@ SOURCE_REF = re.compile(r"[0-9a-f]{40}")
 MAX_SOURCES = 16
 MAX_INSTALL_RECORD = 1 << 20
 START = time.monotonic()
-BUDGET = 15.0
+
+
+def seam(name):
+    """A test seam's value: read only when GUIDANCE_RECORD_TEST=1 marks a test
+    run, so a value leaked into a real session's environment is ignored."""
+    return os.environ.get(name) if os.environ.get("GUIDANCE_RECORD_TEST") == "1" else None
+
+
+def test_scale():
+    """A factor in (0, 1] for every time budget below. Tests only: it is read
+    only when GUIDANCE_RECORD_TEST=1 marks a test run, and it can only shrink
+    the budgets, never grow them."""
+    if os.environ.get("GUIDANCE_RECORD_TEST") != "1":
+        return 1.0
+    try:
+        scale = float(os.environ.get("GUIDANCE_RECORD_TEST_SCALE") or "1")
+    except ValueError:
+        return 1.0
+    return scale if 0.01 <= scale <= 1 else 1.0
+
+
+SCALE = test_scale()
+BUDGET = 15.0 * SCALE
+CALL_CAP = 10.0 * SCALE         # one subprocess call at most
+MIN_CALL = 1.0 * SCALE          # a call with less time left than this is skipped
+
+# Phase 2 (see CLOUD SKILL RECORDS in the header).
+CLOUD_DIR = "cloud-skills"
+MAX_SCAN = 32 << 20             # bytes read from one transcript per Stop
+MAX_SUBAGENT_FILES = 64
+USES_PER_STOP = 50
+SESSION_CAP = 2000              # events recorded per session; the rest only counted
+COLLECT_BUDGET = 4.0 * SCALE    # seconds for all of collection
+PARSE_BUDGET = 1.5 * SCALE      # seconds of it for parsing transcripts
+HASH_BUDGET = 3.0 * SCALE       # seconds of it for walking and hashing skill copies
+NET_BUDGET = 6.0 * SCALE        # seconds of network when phase 2 uploads alone
+BACKOFF_BASE = 120 * SCALE
+BACKOFF_CAP = 64 * 60 * SCALE
+STALE_TEMP = 600                # a leftover guidance-record.* temp dir older than this is swept
+MAX_STATE = 1 << 20
+MAX_PENDING = 8 << 20
+MAX_FILES = 2000                # the lock digest's caps (skills-evals harness/skill_digest.py)
+MAX_BYTES = 50 << 20
+ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(:[A-Za-z0-9][A-Za-z0-9._-]{0,127})?")
+SKILL_DIR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+CLI_RE = re.compile(r"[0-9][0-9A-Za-z.+-]{0,31}")
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+SUBAGENT_FILE_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}\.jsonl")
+OWNER_REPO_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]{1,100})")
+GITHUB_REMOTE_RE = re.compile(
+    r"(?:https://(?:[^@/\s]+@)?github\.com/|ssh://git@github\.com/|git@github\.com:)"
+    r"([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]{1,100}?)(?:\.git)?/?")
+# The hosted session's local git proxy form, http://<user:token>@127.0.0.1:<port>/git/<owner>/<repo>.
+PROXY_REMOTE_RE = re.compile(
+    r"https?://(?:[^@/\s]+@)?(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?/git/"
+    r"([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]{1,100}?)(?:\.git)?/?")
+HTTPS_GITHUB_RE = re.compile(
+    r"https://github\.com/([A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}?)(?:\.git)?")
+COMMAND_NAME_RE = re.compile(r"<command-name>([^<]{0,200})</command-name>")
+BASE_DIR_LINE = "Base directory for this skill: "
+# Claude Code's built-in prompt skills, which write no base-directory message.
+BUILTIN_SKILLS = frozenset({"schedule", "update-config", "loop", "simplify",
+                            "artifact-design", "workflow-authoring"})
+TS_FORMATS = ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ")
+# Inherited variables that would point git at some other repository or index.
+GIT_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                               "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"})
 
 
 def now():
@@ -324,24 +457,97 @@ def registry_sources():
         return None, None
 
 
+# ── subprocesses ────────────────────────────────────────────────────────────
+
+def remaining():
+    return BUDGET - (time.monotonic() - START)
+
+
+def cap_for(deadline):
+    """Seconds one call may take: at most 10, inside the overall budget and
+    `deadline` (a time.monotonic() value, or None)."""
+    cap = min(CALL_CAP, remaining())
+    if deadline is not None:
+        cap = min(cap, deadline - time.monotonic())
+    return cap
+
+
+def kill_group(pid):
+    # Only a real child's own group: killpg(0) is this process's group, and a
+    # pid of 1 or less was never a child.
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def run(args, cwd=None, env=None, data=None, cap=CALL_CAP):
+    """(returncode, stdout bytes), or (None, b"") when it could not start or
+    ran past `cap`. stdin is `data` or /dev/null, stderr is discarded. The
+    child leads its own process group, so a timeout also kills what it
+    spawned (git's remote helper), which would otherwise hold the pipe open."""
+    try:
+        proc = subprocess.Popen(args, cwd=cwd, env=env,
+                                stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+    except (OSError, ValueError):
+        return None, b""
+    try:
+        out, _err = proc.communicate(data, timeout=cap)
+        return proc.returncode, out
+    except subprocess.TimeoutExpired:
+        kill_group(proc.pid)
+        try:
+            proc.communicate(timeout=MIN_CALL)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+        return None, b""
+    except (OSError, ValueError):
+        kill_group(proc.pid)
+        return None, b""
+
+
+def git_env(extra=None):
+    env = {k: v for k, v in os.environ.items() if k not in GIT_LOCATION_VARS}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if extra:
+        env.update(extra)
+    return env
+
+
+def git_out(args, cwd=None, env=None, data=None, deadline=None):
+    """(returncode, stdout bytes) of one hardened git call; returncode -1 when
+    the budget left no time to run it, None when it failed to start or timed
+    out. `env` adds variables (GIT_INDEX_FILE) to this call only."""
+    cap = cap_for(deadline)
+    if cap < MIN_CALL:
+        return -1, b""
+    return run(["git", "-c", "credential.interactive=never", "-c", "core.hooksPath=/dev/null",
+                "-c", "core.fsmonitor=false"] + args,
+               cwd=cwd, env=git_env(env), data=data, cap=cap)
+
+
+def git(args, cwd=None, env=None, deadline=None):
+    return git_out(args, cwd=cwd, env=env, deadline=deadline)[0] == 0
+
+
 # ── upload ──────────────────────────────────────────────────────────────────
 
 def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def remaining():
-    return BUDGET - (time.monotonic() - START)
-
-
-def api(work, method, url, bearer, body=None):
+def api(work, method, url, bearer, body=None, deadline=None):
     """(status, parsed JSON or None). The bearer, if any, reaches curl on stdin
     only; None sends no Authorization header."""
-    cap = min(10.0, remaining())
-    if cap < 1:
+    cap = cap_for(deadline)
+    if cap < MIN_CALL:
         return 0, None
     out = os.path.join(work, "response")
-    args = ["curl", "-sS", "--max-time", str(int(cap)), "-X", method,
+    args = ["curl", "-sS", "--max-time", str(int(cap)) if SCALE == 1 else "%.2f" % cap, "-X", method,
             "-o", out, "-w", "%{http_code}", "--config", "-"]
     if body is not None:
         data = os.path.join(work, "request")
@@ -357,11 +563,11 @@ def api(work, method, url, bearer, body=None):
         # The hosted proxy refuses a body without this (415, measured
         # 2026-10-31); GitHub itself does not need it.
         ('header = "Content-Type: application/json"\n' if body is not None else ""))
+    code, stdout = run(args, data=config.encode("utf-8"), cap=cap + MIN_CALL)
     try:
-        done = subprocess.run(args, input=config, capture_output=True, text=True, timeout=cap + 1)
-        status = int(done.stdout.strip() or 0)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return 0, None
+        status = int(stdout.decode("ascii").strip() or 0) if code is not None else 0
+    except (UnicodeError, ValueError):
+        status = 0
     try:
         with open(out, encoding="utf-8") as handle:
             parsed = json.load(handle)
@@ -383,12 +589,11 @@ def app_jwt(work, client_id, pem, at):
         head = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
         body = b64url(json.dumps({"iat": at - 60, "exp": at + 540, "iss": client_id},
                                  separators=(",", ":")).encode())
-        signed = subprocess.run(["openssl", "dgst", "-sha256", "-sign", key],
-                                input=("%s.%s" % (head, body)).encode("ascii"),
-                                capture_output=True, timeout=5)
-        if signed.returncode != 0 or not signed.stdout:
+        code, signed = run(["openssl", "dgst", "-sha256", "-sign", key],
+                           data=("%s.%s" % (head, body)).encode("ascii"), cap=5 * SCALE)
+        if code != 0 or not signed:
             return None
-        return "%s.%s.%s" % (head, body, b64url(signed.stdout))
+        return "%s.%s.%s" % (head, body, b64url(signed))
     finally:
         os.unlink(key)
 
@@ -423,44 +628,138 @@ def append(work, base, token, line, when):
     return False
 
 
-def git(args, cwd=None):
-    cap = min(10.0, remaining())
-    if cap < 1:
-        return False
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    try:
-        return subprocess.run(["git"] + args, cwd=cwd, env=env, capture_output=True,
-                              timeout=cap).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def git_append(work, line, when):
-    remote = os.environ.get("GUIDANCE_RECORD_GIT") or "https://github.com/%s" % REPO
-    rel = os.path.join("events", when.strftime("%Y-%m"), "cloud-guidance.jsonl")
-    who = []
-    if subprocess.run(["git", "config", "user.email"], capture_output=True).returncode != 0:
-        who = ["-c", "user.name=guidance-load-record",
-               "-c", "user.email=guidance-load-record@users.noreply.github.com"]
-    for attempt in range(2):
-        tree = os.path.join(work, "clone%d" % attempt)
-        if not git(["clone", "-q", "--depth", "1", "--single-branch", "--branch", BRANCH, remote, tree]):
-            return False
-        target = os.path.join(tree, rel)
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        old = b""
-        if os.path.exists(target):
-            with open(target, "rb") as handle:
-                old = handle.read()
+def guidance_edit(line, when):
+    """Phase 1's file and how to extend it."""
+    def build(old):
         if old and not old.endswith(b"\n"):
             old += b"\n"
-        with open(target, "wb") as handle:
-            handle.write(old + line.encode("utf-8") + b"\n")
-        if not (git(["add", rel], tree) and git(who + ["commit", "-q", "-m", "guidance-load event"], tree)):
-            return False
-        if git(["push", "-q", "origin", "HEAD:refs/heads/" + BRANCH], tree):
-            return True
-    return False
+        return old + line.encode("utf-8") + b"\n"
+    return "events/%s/cloud-guidance.jsonl" % when.strftime("%Y-%m"), build
+
+
+def shard_edits(sid, lines):
+    """Phase 2's shards, one per month of the events' own timestamps, and how
+    to extend each with the lines whose id it does not hold yet."""
+    by_month = {}
+    for ident, month, text in lines:
+        by_month.setdefault(month, []).append((ident, text))
+    edits = []
+    for month in sorted(by_month):
+        def build(old, items=by_month[month]):
+            have = set()
+            for raw in old.split(b"\n"):
+                try:
+                    doc = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(doc, dict) and isinstance(doc.get("id"), str):
+                    have.add(doc["id"])
+            add = []
+            for ident, text in items:
+                if ident not in have:
+                    have.add(ident)
+                    add.append(text)
+            if not add:
+                return None
+            if old and not old.endswith(b"\n"):
+                old += b"\n"
+            return old + "".join(t + "\n" for t in add).encode("utf-8")
+        edits.append(("events/%s/%s/%s.jsonl" % (month, CLOUD_DIR, sid), build))
+    return edits
+
+
+def git_identity(clone, deadline):
+    code, out = git_out(["config", "user.email"], cwd=clone, deadline=deadline)
+    if code == 0 and out.strip():
+        return []
+    return ["-c", "user.name=guidance-load-record",
+            "-c", "user.email=guidance-load-record@users.noreply.github.com"]
+
+
+def git_commit(work, edits, deadline, message, name="c"):
+    """One commit carrying every edit, pushed to BRANCH: "ok", "race" (every
+    push lost to another writer until the deadline), or "fail". Plumbing only:
+    a depth-1 clone with no checkout, the tip's whole tree read into a private
+    index, each file's new blob added to it, then write-tree and commit-tree."""
+    remote = seam("GUIDANCE_RECORD_GIT") or "https://github.com/%s" % REPO
+    clone = os.path.join(work, name)
+    if not git(["clone", "-q", "--depth", "1", "--no-checkout", "--single-branch",
+                "--branch", BRANCH, remote, clone], deadline=deadline):
+        return "fail"
+    index_path = os.path.join(work, name + ".index")
+    index = {"GIT_INDEX_FILE": index_path}
+    who = git_identity(clone, deadline)
+    tip_ref, rejected = "HEAD", False
+
+    def failed():
+        # Out of time after losing a push is a lost race, not a failure.
+        return "race" if rejected and cap_for(deadline) < MIN_CALL else "fail"
+
+    while True:
+        if cap_for(deadline) < MIN_CALL:
+            return "race" if rejected else "fail"
+        code, out = git_out(["rev-parse", "--verify", "-q", tip_ref + "^{commit}"], cwd=clone,
+                            deadline=deadline)
+        tip = out.decode("ascii", "replace").strip()
+        if code != 0 or not SHA_RE.fullmatch(tip):
+            return failed()
+        try:
+            os.unlink(index_path)
+        except FileNotFoundError:
+            pass
+        # The tip's whole tree first: without it the commit would hold only
+        # the files written below and delete every other file on the branch.
+        if not git(["read-tree", tip], cwd=clone, env=index, deadline=deadline):
+            return failed()
+        changed = False
+        for path, build in edits:
+            code, listed = git_out(["ls-tree", "-z", tip, "--", path], cwd=clone, deadline=deadline)
+            if code != 0:
+                return failed()
+            old = b""
+            if listed:
+                # The file exists: a read that fails must never be taken for
+                # an empty file and overwritten.
+                code, old = git_out(["cat-file", "blob", "%s:%s" % (tip, path)], cwd=clone,
+                                    deadline=deadline)
+                if code != 0:
+                    return failed()
+            new = build(old)
+            if new is None or new == old:
+                continue
+            code, blob = git_out(["hash-object", "-w", "--stdin"], cwd=clone, data=new,
+                                 deadline=deadline)
+            blob = blob.decode("ascii", "replace").strip()
+            if code != 0 or not SHA_RE.fullmatch(blob):
+                return failed()
+            if not git(["update-index", "--add", "--cacheinfo", "100644,%s,%s" % (blob, path)],
+                       cwd=clone, env=index, deadline=deadline):
+                return failed()
+            changed = True
+        if not changed:
+            return "ok"
+        code, tree = git_out(["write-tree"], cwd=clone, env=index, deadline=deadline)
+        tree = tree.decode("ascii", "replace").strip()
+        if code != 0 or not SHA_RE.fullmatch(tree):
+            return failed()
+        code, commit = git_out(who + ["commit-tree", tree, "-p", tip, "-m", message], cwd=clone,
+                               deadline=deadline)
+        commit = commit.decode("ascii", "replace").strip()
+        if code != 0 or not SHA_RE.fullmatch(commit):
+            return failed()
+        code, out = git_out(["push", "--porcelain", "origin", "%s:refs/heads/%s" % (commit, BRANCH)],
+                            cwd=clone, deadline=deadline)
+        if code == 0:
+            return "ok"
+        # --porcelain marks a refused ref with "!"; a network error, a 5xx or a
+        # timeout prints no ref line at all.
+        if code is None or code < 0 or not any(l.startswith(b"!") for l in out.splitlines()):
+            return failed()
+        rejected = True
+        if not git(["fetch", "-q", "--depth", "1", "origin", "refs/heads/" + BRANCH], cwd=clone,
+                   deadline=deadline):
+            return failed()
+        tip_ref = "FETCH_HEAD"
 
 
 def app_token(work, base, when):
@@ -488,40 +787,780 @@ def app_token(work, base, when):
     return token if isinstance(token, str) and token else None
 
 
-def upload(line, when):
-    base = (os.environ.get("GUIDANCE_RECORD_API") or "https://api.github.com").rstrip("/")
-    if shutil.which("curl") is None:
-        return False
-    work = tempfile.mkdtemp(prefix="guidance-record.")
+def work_dir():
+    """A private temp dir for one upload, or None. The temp root is resolved
+    once (a symlinked /tmp, as on macOS, is fine), and the new dir must
+    resolve to a direct child of it, or it is refused. First sweeps this
+    user's own guidance-record.* dirs left over 10 minutes ago."""
+    root = os.path.realpath(tempfile.gettempdir())
     try:
-        status, doc = api(work, "GET", "%s/repos/%s" % (base, REPO), None)
+        uid, cutoff = os.getuid(), time.time() - STALE_TEMP
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if not entry.name.startswith("guidance-record."):
+                    continue
+                info = os.lstat(entry.path)
+                if stat.S_ISDIR(info.st_mode) and info.st_uid == uid and info.st_mtime < cutoff:
+                    shutil.rmtree(entry.path, ignore_errors=True)
+    except OSError:
+        pass
+    work = tempfile.mkdtemp(prefix="guidance-record.", dir=root)
+    if os.path.realpath(work) != os.path.join(root, os.path.basename(work)) or os.path.islink(work):
+        try:
+            os.rmdir(work)
+        except OSError:
+            pass
+        return None
+    return work
+
+
+def upload(line, when, cloud=None):
+    """Phase 1's `uploaded` for `line` (None when `line` is None). With
+    `cloud` due, its pending lines go in the same commit as `line`, or alone."""
+    snap = None
+    if cloud is not None:
+        cloud.attempted = True
+        snap = cloud.snapshot()
+    if line is None and not snap:
+        return None
+    outcome = "fail"
+    work = None
+    try:
+        base = (seam("GUIDANCE_RECORD_API") or "https://api.github.com").rstrip("/")
+        if line is None:
+            deadline = time.monotonic() + min(NET_BUDGET, remaining() - MIN_CALL / 2)
+        else:
+            deadline = None
+        if shutil.which("curl") is None:
+            return False if line is not None else None
+        work = work_dir()
+        if work is None:
+            return False if line is not None else None
+        status, doc = api(work, "GET", "%s/repos/%s" % (base, REPO), None, deadline=deadline)
         perms = doc.get("permissions") if status == 200 and isinstance(doc, dict) else None
         if isinstance(perms, dict) and perms.get("push") is True:
-            return shutil.which("git") is not None and git_append(work, line, when)
+            if shutil.which("git") is None:
+                return False if line is not None else None
+            edits = [guidance_edit(line, when)] if line is not None else []
+            if snap:
+                edits += shard_edits(cloud.sid, snap)
+            message = {(True, False): "guidance-load event", (False, True): "cloud skill events",
+                       (True, True): "guidance-load and cloud skill events"}[(line is not None, bool(snap))]
+            outcome = git_commit(work, edits, deadline, message)
+            if line is not None and snap and outcome != "ok" and cap_for(deadline) >= MIN_CALL:
+                # A phase-2 problem (an unreadable shard, say) must not cost
+                # phase 1's once-per-session record: try it again alone.
+                return git_commit(work, [guidance_edit(line, when)], deadline,
+                                  "guidance-load event", name="phase1") == "ok"
+            return outcome == "ok" if line is not None else None
+        if status in (403, 404) or (status == 200 and isinstance(doc, dict)):
+            outcome = "nocred"       # a definite answer: this session cannot push there
+        if line is None:
+            return None
         token = app_token(work, base, when)
         return append(work, base, token, line, when) if token else False
     except Exception:
-        return False
+        return False if line is not None else None
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)
+        if snap:
+            try:
+                cloud.finish(outcome, snap)
+            except Exception:
+                pass
+
+
+# ── phase 2: which skill copies a cloud session loaded ─────────────────────
+
+class BudgetOut(Exception):
+    """The hash budget ran out; the use is left for the next Stop."""
+
+
+class Refused(Exception):
+    """A symbolic link or a non-regular entry in a skill tree."""
+
+
+class TooLarge(Exception):
+    """A skill tree past MAX_FILES files or MAX_BYTES bytes."""
+
+
+def epoch():
+    return now().timestamp()
+
+
+def parse_ts(raw):
+    """An aware UTC datetime for a transcript or record timestamp, year
+    2000-2100, else None."""
+    if not isinstance(raw, str) or len(raw) > 40:
+        return None
+    for fmt in TS_FORMATS:
+        try:
+            when = datetime.datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        return when.replace(tzinfo=datetime.timezone.utc) if 2000 <= when.year <= 2100 else None
+    return None
+
+
+def read_small(path, limit):
+    """A regular file's bytes, or None: no link, FIFO or device is followed or
+    opened blocking, and nothing over `limit` bytes is returned."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return None
+        data = handle.read(limit + 1)
+    return data if len(data) <= limit else None
+
+
+def load_json(path, limit=MAX_INSTALL_RECORD * 4):
+    try:
+        data = read_small(path, limit)
+        return json.loads(data.decode("utf-8")) if data is not None else None
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def write_atomic(path, data):
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    os.replace(tmp, path)
+
+
+def owner_repo(value):
+    found = OWNER_REPO_RE.fullmatch(value) if isinstance(value, str) else None
+    return value if found and found.group(2) not in (".", "..") else None
+
+
+def base_dir_line(message):
+    """The path after `Base directory for this skill: ` when that is the
+    first line of the entry's text, else None."""
+    content = message.get("content")
+    if isinstance(content, list):
+        first = content[0] if content else None
+        content = first.get("text") if isinstance(first, dict) and first.get("type") == "text" else None
+    if not isinstance(content, str):
+        return None
+    line = content.split("\n", 1)[0]
+    return line[len(BASE_DIR_LINE):] or None if line.startswith(BASE_DIR_LINE) else None
+
+
+def typed_command(message):
+    """The slash command a user entry's own text typed, or None."""
+    content = message.get("content")
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [i["text"] for i in content if isinstance(i, dict) and i.get("type") == "text"
+                 and isinstance(i.get("text"), str)]
+    else:
+        return None
+    for text in texts:
+        found = COMMAND_NAME_RE.search(text)
+        if found:
+            return found.group(1)
+    return None
+
+
+def scan(path, mark, session, parse_end):
+    """(settled uses, cutoff offset, (dev, ino)) for one transcript from its
+    watermark, or None when it cannot be read. Only complete lines whose
+    `sessionId` is this session's count; the cutoff never passes a use that
+    is not settled yet (no base-directory message, no tool result, no later
+    assistant turn)."""
+    if time.monotonic() >= parse_end:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        off = mark.get("off")
+        off = off if isinstance(off, int) and off >= 0 else 0
+        if [info.st_dev, info.st_ino] != [mark.get("dev"), mark.get("ino")] or info.st_size < off:
+            off = 0                      # a new or truncated file starts over
+        os.lseek(fd, off, os.SEEK_SET)
+        chunks, got = [], 0
+        while got < MAX_SCAN and time.monotonic() < parse_end:
+            chunk = os.read(fd, min(1 << 20, MAX_SCAN - got))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            got += len(chunk)
+        data = b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    ident = (info.st_dev, info.st_ino)
+    end = data.rfind(b"\n")
+    if end < 0:
+        # A whole read with no newline is skipped, not retried forever.
+        return [], off + len(data) if len(data) >= MAX_SCAN else off, ident
+    uses, by_call, by_parent, results = [], {}, {}, set()
+    last_assistant, pos, idx, limit = -1, 0, 0, end + 1
+    while pos <= end:
+        if time.monotonic() >= parse_end:
+            limit = pos
+            break
+        nl = data.index(b"\n", pos)
+        raw, start = data[pos:nl], off + pos
+        pos, idx = nl + 1, idx + 1
+        try:
+            entry = json.loads(raw)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(entry, dict) or entry.get("sessionId") != session:
+            continue
+        kind, message = entry.get("type"), entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        if kind == "assistant":
+            last_assistant = idx
+            content = message.get("content")
+            for item in content if isinstance(content, list) else ():
+                if not (isinstance(item, dict) and item.get("type") == "tool_use"
+                        and item.get("name") == "Skill"):
+                    continue
+                call, given = item.get("id"), item.get("input")
+                name = given.get("skill") if isinstance(given, dict) else None
+                if isinstance(call, str) and ID_RE.fullmatch(call) and call not in by_call \
+                        and isinstance(name, str) and name:
+                    use = {"id": call, "name": name, "typed": False, "idx": idx, "start": start,
+                           "ts": entry.get("timestamp"), "cli": entry.get("version"), "base": None}
+                    uses.append(use)
+                    by_call[call] = use
+        elif kind == "user":
+            if entry.get("isMeta") is True:
+                base = base_dir_line(message)
+                if base is not None:
+                    for table, key in ((by_call, entry.get("sourceToolUseID")),
+                                       (by_parent, entry.get("parentUuid"))):
+                        use = table.get(key) if isinstance(key, str) else None
+                        if use is not None and use["base"] is None:
+                            use["base"] = base
+                continue
+            content = message.get("content")
+            for item in content if isinstance(content, list) else ():
+                if isinstance(item, dict) and item.get("type") == "tool_result" \
+                        and isinstance(item.get("tool_use_id"), str):
+                    results.add(item["tool_use_id"])
+            command, uuid = typed_command(message), entry.get("uuid")
+            if command and isinstance(uuid, str) and ID_RE.fullmatch(uuid) and uuid not in by_parent:
+                use = {"id": uuid, "name": command, "typed": True, "idx": idx, "start": start,
+                       "ts": entry.get("timestamp"), "cli": entry.get("version"), "base": None}
+                uses.append(use)
+                by_parent[uuid] = use
+    settled = []
+    for use in uses:
+        if use["base"] is not None or (not use["typed"] and use["id"] in results) \
+                or last_assistant > use["idx"]:
+            settled.append(use)
+            continue
+        return settled, use["start"], ident
+    return settled, off + limit, ident
+
+
+def path_shape(real):
+    """(kind by path alone, the `.claude` directory, the marketplace)."""
+    parts = real.split("/")
+    if "local-agent-mode-sessions" in parts:
+        return "account-plugin", None, None
+    for index, part in enumerate(parts):
+        if part != ".claude":
+            continue
+        claude, rest = "/".join(parts[:index + 1]) or "/", parts[index + 1:]
+        if len(rest) == 7 and rest[:2] == ["plugins", "cache"] and rest[5] == "skills":
+            return "plugin-cache", claude, rest[2]
+        if len(rest) > 2 and rest[:2] == ["skills", "synced"]:
+            return "account-sync", claude, None
+        if len(rest) == 2 and rest[0] == "skills":
+            return "user-skills", claude, None
+    return "unknown", None, None
+
+
+def check_budget(hash_end):
+    if time.monotonic() >= hash_end:
+        raise BudgetOut()
+
+
+def latest_change(root, skip, hash_end):
+    """The latest max(mtime, ctime) of `root` and everything under it, links
+    not followed and `skip` left out."""
+    def fail(error):
+        raise error
+    info = os.lstat(root)
+    latest, count = max(info.st_mtime, info.st_ctime), 0
+    for directory, subdirs, names in os.walk(root, followlinks=False, onerror=fail):
+        check_budget(hash_end)
+        for name in subdirs + names:
+            path = os.path.join(directory, name)
+            if path in skip:
+                continue
+            count += 1
+            if count > 2 * MAX_FILES:
+                raise TooLarge()
+            info = os.lstat(path)
+            latest = max(latest, info.st_mtime, info.st_ctime)
+    return latest
+
+
+def file_sha256(path, budget):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    digest = hashlib.sha256()
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise Refused()
+        while True:
+            chunk = handle.read(1 << 20)
+            if not chunk:
+                break
+            budget[0] -= len(chunk)
+            if budget[0] < 0:
+                raise TooLarge()
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def lock_digest(root, skip, hash_end):
+    """The lock-kind digest of the directory `root`, byte for byte skills-evals'
+    harness/skill_digest.py `lock_digest` (adam-agentskills'
+    generate_skills_lock.py `digest_skill_dir`): sha256 over sorted lines
+    `<relpath>\\0<sha256 of the file>\\n`, one per regular file, `skip` left
+    out. A link or any other non-regular entry is refused; the budget is
+    checked before every file is opened."""
+    if os.path.islink(root):
+        raise Refused()
+    top = os.path.realpath(root)
+    if not os.path.isdir(top):
+        raise NotADirectoryError(root)
+    files = []
+
+    def fail(error):
+        raise error
+    for directory, subdirs, names in os.walk(top, followlinks=False, onerror=fail):
+        check_budget(hash_end)
+        for name in subdirs + names:
+            path = os.path.join(directory, name)
+            mode = os.lstat(path).st_mode
+            if stat.S_ISLNK(mode):
+                raise Refused()
+            if stat.S_ISDIR(mode):
+                continue
+            if not stat.S_ISREG(mode):
+                raise Refused()
+            if path in skip:
+                continue
+            files.append((os.path.relpath(path, top), path))
+            if len(files) > MAX_FILES:
+                raise TooLarge()
+    budget, manifest = [MAX_BYTES], []
+    for relpath, path in sorted(files, key=lambda f: f[0]):
+        check_budget(hash_end)
+        manifest.append("%s\0%s\n" % (relpath, file_sha256(path, budget)))
+    return hashlib.sha256("".join(manifest).encode("utf-8")).hexdigest()
+
+
+class Copies:
+    """Resolves which copy each use loaded, a port of skills-evals'
+    LoadedCopies (scripts/model_usage_census.py): each base directory is
+    walked and hashed at most once per Stop."""
+
+    def __init__(self):
+        self.trees, self.toplevels, self.origins, self.json = {}, {}, {}, {}
+
+    def resolve(self, name, base, when, hash_end):
+        out = {"base_kind": "unknown", "registry": None, "ref": None, "digest": None,
+               "digest_null_reason": None}
+        bare = name.split(":", 1)[1] if name and ":" in name else name
+        if not bare or not SKILL_DIR_RE.fullmatch(bare):
+            return dict(out, digest_null_reason="bad-name")
+        if base is None:
+            if bare in BUILTIN_SKILLS:
+                return dict(out, base_kind="builtin", digest_null_reason="builtin")
+            return dict(out, digest_null_reason="no-base-dir")
+        if not os.path.isabs(base) or "\0" in base:
+            return dict(out, digest_null_reason="outside-known-roots")
+        if "bundled-skills" in base.split("/"):
+            return dict(out, base_kind="builtin", digest_null_reason="builtin")
+        real = os.path.realpath(base)
+        if os.path.basename(os.path.normpath(base)) != bare or os.path.basename(real) != bare:
+            return dict(out, digest_null_reason="no-base-dir")
+        kind, claude, marketplace = path_shape(real)
+        if not os.path.isdir(real):
+            return dict(out, base_kind=kind, digest_null_reason="gone")
+        checkout = None
+        if kind in ("user-skills", "unknown"):
+            checkout = self.toplevel(real, hash_end)
+            if checkout is not None:
+                kind = "repo"
+        if kind == "unknown":
+            return dict(out, digest_null_reason="outside-known-roots")
+        out["base_kind"] = kind
+        if kind == "plugin-cache":
+            out["registry"] = self.marketplace_repo(claude, marketplace)
+            out["ref"] = self.install_ref(claude, os.path.dirname(os.path.dirname(real)))
+        elif kind == "repo":
+            out["registry"] = self.origin_repo(checkout, hash_end)
+        tree = self.tree(real, checkout, hash_end)
+        reason = tree.get("reason")
+        if reason is None and tree["latest"] > when.timestamp():
+            reason = "changed-since-load"
+        if reason is None:
+            reason = self.digest(tree, hash_end)
+        if reason is not None:
+            return dict(out, digest_null_reason=reason)
+        out["digest"] = tree["digest"]
+        if kind == "user-skills":
+            out["registry"], out["ref"] = self.bootstrap_entry(claude, bare, tree["digest"])
+        return out
+
+    def tree(self, real, checkout, hash_end):
+        if real not in self.trees:
+            try:
+                skip = self.ignored(checkout, hash_end) if checkout is not None else frozenset()
+                self.trees[real] = {"path": real, "skip": skip,
+                                    "latest": latest_change(real, skip, hash_end)}
+            except TooLarge:
+                self.trees[real] = {"reason": "too-large"}
+            except OSError:
+                self.trees[real] = {"reason": "gone"}
+        return self.trees[real]
+
+    @staticmethod
+    def digest(tree, hash_end):
+        if "digest" not in tree:
+            try:
+                tree["digest"] = lock_digest(tree["path"], tree["skip"], hash_end)
+            except Refused:
+                tree["reason"] = "refused-by-registry-rules"
+            except TooLarge:
+                tree["reason"] = "too-large"
+            except (OSError, UnicodeError):
+                tree["reason"] = "gone"
+            if "reason" in tree:
+                tree["digest"] = None
+        return tree.get("reason")
+
+    def toplevel(self, real, hash_end):
+        if real not in self.toplevels:
+            code, out = git_out(["-C", real, "rev-parse", "--show-toplevel"], deadline=hash_end)
+            if code == -1:
+                raise BudgetOut()
+            top = out.decode("utf-8", "replace").strip() if code == 0 else ""
+            self.toplevels[real] = os.path.realpath(top) if top else None
+        return self.toplevels[real]
+
+    def ignored(self, checkout, hash_end):
+        """The untracked files git ignores under `checkout`, absolute: the
+        generator's `ignored_paths`."""
+        code, out = git_out(["-c", "core.autocrlf=false", "-c", "core.eol=lf", "-C", checkout,
+                             "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+                            deadline=hash_end)
+        if code == -1:
+            raise BudgetOut()
+        if code != 0:
+            raise OSError("git ls-files failed")
+        return frozenset(os.path.normpath(os.path.join(checkout, os.fsdecode(n)))
+                         for n in out.split(b"\0") if n)
+
+    def origin_repo(self, checkout, hash_end):
+        """`owner/repo` of the checkout's origin (github.com, or the hosted
+        session's local proxy form), else None. The URL itself is never kept."""
+        if checkout not in self.origins:
+            code, out = git_out(["-C", checkout, "config", "--get", "remote.origin.url"],
+                                deadline=hash_end)
+            if code == -1:
+                raise BudgetOut()
+            url = out.decode("utf-8", "replace").strip() if code == 0 else ""
+            found = GITHUB_REMOTE_RE.fullmatch(url) or PROXY_REMOTE_RE.fullmatch(url)
+            repo = "%s/%s" % (found.group(1), found.group(2)) if found else None
+            self.origins[checkout] = owner_repo(repo)
+        return self.origins[checkout]
+
+    def load(self, path):
+        if path not in self.json:
+            self.json[path] = load_json(path)
+        return self.json[path]
+
+    def marketplace_repo(self, claude, marketplace):
+        known = self.load(os.path.join(claude, "plugins", "known_marketplaces.json"))
+        entry = known.get(marketplace) if isinstance(known, dict) else None
+        source = entry.get("source") if isinstance(entry, dict) else None
+        if isinstance(source, dict) and source.get("source") == "github":
+            return owner_repo(source.get("repo"))
+        return None
+
+    def install_ref(self, claude, version_root):
+        record = self.load(os.path.join(claude, "plugins", "installed_plugins.json"))
+        plugins = record.get("plugins") if isinstance(record, dict) else None
+        for installs in plugins.values() if isinstance(plugins, dict) else ():
+            for entry in installs if isinstance(installs, list) else ():
+                path = entry.get("installPath") if isinstance(entry, dict) else None
+                if not isinstance(path, str) or os.path.realpath(path) != version_root:
+                    continue
+                sha = entry.get("gitCommitSha")
+                return sha if isinstance(sha, str) and SHA_RE.fullmatch(sha) else None
+        return None
+
+    def installed(self, claude):
+        record = self.load(os.path.join(claude, "skills", ".skills-bootstrap-installed.json"))
+        listed = record.get("installed") if isinstance(record, dict) else None
+        return [e for e in listed if isinstance(e, dict)] if isinstance(listed, list) else []
+
+    def bootstrap_entry(self, claude, name, digest):
+        """(registry, ref) from skills-bootstrap.sh's install record, only when
+        its entry for `name` names this copy's digest."""
+        for entry in self.installed(claude):
+            if entry.get("name") != name:
+                continue
+            recorded, url, ref = entry.get("digest"), entry.get("registry"), entry.get("ref")
+            if isinstance(recorded, str) and recorded.startswith("sha256:"):
+                recorded = recorded[len("sha256:"):]
+            if recorded != digest or not isinstance(url, str):
+                return None, None
+            found = HTTPS_GITHUB_RE.fullmatch(url)
+            return (owner_repo(found.group(1)) if found else None,
+                    ref if isinstance(ref, str) and SHA_RE.fullmatch(ref) else None)
+        return None, None
+
+
+class Cloud:
+    """Phase 2's per-session state under <state>/cloud-skills/<sha256 of the
+    session id>.{state.json,pending.jsonl,lock}."""
+
+    def __init__(self, states, digest, session, transcript):
+        self.sid = digest[:16]
+        self.session, self.transcript = session, transcript
+        self.dir = os.path.join(states, CLOUD_DIR)
+        self.path = os.path.join(self.dir, digest)
+        self.states = states
+        self.attempted = False
+        self.copies = Copies()
+
+    def prepare(self):
+        os.makedirs(self.states, exist_ok=True)
+        try:
+            os.mkdir(self.dir, 0o700)
+        except FileExistsError:
+            pass
+        return self.safe()
+
+    def safe(self):
+        """The state dir is a real directory of this user's, not a link."""
+        try:
+            info = os.lstat(self.dir)
+        except OSError:
+            return False
+        return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+
+    def lock(self):
+        """A held lock's descriptor, or None when another Stop holds it."""
+        import fcntl
+        fd = os.open(self.path + ".lock",
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+        return fd
+
+    def load_state(self):
+        doc = load_json(self.path + ".state.json", MAX_STATE)
+        doc = doc if isinstance(doc, dict) else {}
+        st = {"files": {}, "seen": [], "fails": 0, "next_try": 0, "nocred": False, "n": 0,
+              "overflow": 0}
+        for key, kind in (("files", dict), ("seen", list), ("fails", int), ("next_try", (int, float)),
+                          ("nocred", bool), ("n", int), ("overflow", int)):
+            if isinstance(doc.get(key), kind) and not (kind is int and isinstance(doc[key], bool)):
+                st[key] = doc[key]
+        return st
+
+    def save_state(self, st):
+        st["seen"] = st["seen"][-2 * SESSION_CAP:]
+        write_atomic(self.path + ".state.json", json.dumps(st, separators=(",", ":")).encode("utf-8"))
+
+    def load_pending(self):
+        """[(id, month, line)] from the pending file; malformed lines dropped."""
+        data = read_small(self.path + ".pending.jsonl", MAX_PENDING) or b""
+        out, ids = [], set()
+        for raw in data.split(b"\n"):
+            try:
+                doc = json.loads(raw)
+            except ValueError:
+                continue
+            ident = doc.get("id") if isinstance(doc, dict) else None
+            when = parse_ts(doc.get("ts")) if isinstance(doc, dict) else None
+            if isinstance(ident, str) and ID_RE.fullmatch(ident) and when and ident not in ids:
+                ids.add(ident)
+                out.append((ident, when.strftime("%Y-%m"), raw.decode("utf-8")))
+        return out
+
+    def save_pending(self, items):
+        write_atomic(self.path + ".pending.jsonl", "".join(t + "\n" for _i, _m, t in items).encode("utf-8"))
+
+    def files(self):
+        """("main", transcript), then this session's subagent transcripts."""
+        yield "main", self.transcript
+        if not ID_RE.fullmatch(self.session):
+            return
+        sub = os.path.join(os.path.dirname(self.transcript), self.session, "subagents")
+        try:
+            names = sorted(n for n in os.listdir(sub) if SUBAGENT_FILE_RE.fullmatch(n))
+        except OSError:
+            return
+        for name in names[:MAX_SUBAGENT_FILES]:
+            yield "sub:" + name, os.path.join(sub, name)
+
+    def allowlisted(self, bare):
+        """A typed command counts without a base directory only when its name
+        is one skills-bootstrap.sh installed (the cloud's skill allowlist)."""
+        home = os.environ.get("HOME") or ""
+        return bool(home) and any(e.get("name") == bare for e in
+                                  self.copies.installed(os.path.join(home, ".claude")))
+
+    def event(self, use, hash_end):
+        """The shard line for one settled use, or None when it is not recorded."""
+        raw = use["name"]
+        name = raw[1:] if raw.startswith("/") else raw
+        valid = NAME_RE.fullmatch(name) is not None
+        when = parse_ts(use["ts"])
+        if when is None:
+            return None                  # undated: skipped, as the local census does
+        copy = self.copies.resolve(name if valid else None, use["base"], when, hash_end)
+        if use["typed"] and use["base"] is None:
+            reason = copy["digest_null_reason"]
+            bare = name.split(":", 1)[-1]
+            # A typed command with no skill behind it (/clear, /help) is no use.
+            if not (reason == "builtin" or (reason == "no-base-dir" and self.allowlisted(bare))):
+                return None
+        cli = use["cli"]
+        doc = {"v": 1, "id": use["id"], "ts": when.strftime(ISO), "kind": "skill", "surface": "cloud",
+               "session": self.sid,
+               "cli": cli if isinstance(cli, str) and CLI_RE.fullmatch(cli) else None,
+               "name": name if valid else "invalid"}
+        doc.update(copy)
+        return json.dumps(doc, separators=(",", ":"))
+
+    def collect(self):
+        """Record every newly settled use into the pending file. Never holds
+        the lock across the network; a busy lock skips this Stop."""
+        t0 = time.monotonic()
+        collect_end = min(t0 + COLLECT_BUDGET, START + BUDGET - MIN_CALL)
+        parse_end = min(t0 + PARSE_BUDGET, collect_end)
+        if not self.prepare():
+            return
+        fd = self.lock()
+        if fd is None:
+            return
+        try:
+            st = self.load_state()
+            seen, new, left, hash_end, stop = set(st["seen"]), [], USES_PER_STOP, None, False
+            for key, path in self.files():
+                if stop:
+                    break
+                mark = st["files"].get(key)
+                found = scan(path, mark if isinstance(mark, dict) else {}, self.session, parse_end)
+                if found is None:
+                    continue
+                uses, cutoff, ident = found
+                for use in uses:
+                    if use["id"] in seen:
+                        continue
+                    if left <= 0:
+                        cutoff, stop = use["start"], True
+                        break
+                    if hash_end is None:
+                        hash_end = min(time.monotonic() + HASH_BUDGET, collect_end)
+                    try:
+                        line = self.event(use, hash_end)
+                    except BudgetOut:
+                        cutoff, stop = use["start"], True
+                        break
+                    left -= 1
+                    if line is None:
+                        continue
+                    if st["n"] >= SESSION_CAP:
+                        st["overflow"] += 1
+                        continue
+                    st["n"] += 1
+                    seen.add(use["id"])
+                    st["seen"].append(use["id"])
+                    new.append(line)
+                st["files"][key] = {"off": cutoff, "dev": ident[0], "ino": ident[1]}
+            if new:
+                pending = self.load_pending()
+                have = {i for i, _m, _t in pending}
+                for line in new:
+                    doc = json.loads(line)
+                    if doc["id"] not in have:
+                        have.add(doc["id"])
+                        pending.append((doc["id"], parse_ts(doc["ts"]).strftime("%Y-%m"), line))
+                self.save_pending(pending)
+            self.save_state(st)
+        finally:
+            os.close(fd)
+
+    def snapshot(self):
+        """The pending lines to upload now, or None: nothing pending, a
+        definite no-credential answer earlier, or still backing off."""
+        if not self.safe():
+            return None
+        fd = self.lock()
+        if fd is None:
+            return None
+        try:
+            st = self.load_state()
+            if st["nocred"] or (st["fails"] > 0 and epoch() < st["next_try"]):
+                return None
+            return self.load_pending() or None
+        finally:
+            os.close(fd)
+
+    def finish(self, outcome, snap):
+        """Under a fresh lock: drop the uploaded ids from pending and record
+        the outcome. A busy lock leaves both; the next Stop re-uploads and
+        the shard dedupes by id."""
+        if not self.safe():
+            return
+        fd = self.lock()
+        if fd is None:
+            return
+        try:
+            st, t = self.load_state(), epoch()
+            if outcome == "ok":
+                done = {i for i, _m, _t in snap}
+                self.save_pending([p for p in self.load_pending() if p[0] not in done])
+                st["fails"], st["next_try"] = 0, 0
+            elif outcome == "race":
+                st["next_try"] = t
+            elif outcome == "nocred":
+                st["nocred"] = True
+            else:
+                st["fails"] = min(st["fails"] + 1, 30)
+                st["next_try"] = t + min(BACKOFF_BASE * 2 ** (st["fails"] - 1), BACKOFF_CAP)
+            self.save_state(st)
+        finally:
+            os.close(fd)
 
 
 # ── main ────────────────────────────────────────────────────────────────────
 
-def main():
-    try:
-        event = json.loads(os.environ.get("GUIDANCE_HOOK_INPUT") or "")
-    except ValueError:
-        return
-    if not isinstance(event, dict) or event.get("hook_event_name", "Stop") != "Stop":
-        return
-    session, transcript = event.get("session_id"), event.get("transcript_path")
-    if not isinstance(session, str) or not session or not isinstance(transcript, str):
-        return
-    states = state_dir()
-    if states is None:
-        return
-    digest = hashlib.sha256(session.encode("utf-8")).hexdigest()
+def phase1(states, digest, transcript, cloud):
     flag = os.path.join(states, "done", digest)
     if os.path.exists(flag):
         return
@@ -565,11 +1604,45 @@ def main():
     line = json.dumps(record, separators=(",", ":"))
     uploaded = None
     if remote:
-        uploaded = upload(line, when)
+        uploaded = upload(line, when, cloud)
     record["uploaded"] = uploaded
     fd = os.open(os.path.join(states, "sessions.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def main():
+    try:
+        event = json.loads(os.environ.get("GUIDANCE_HOOK_INPUT") or "")
+    except ValueError:
+        return
+    if not isinstance(event, dict) or event.get("hook_event_name", "Stop") != "Stop":
+        return
+    session, transcript = event.get("session_id"), event.get("transcript_path")
+    if not isinstance(session, str) or not session or not isinstance(transcript, str):
+        return
+    states = state_dir()
+    if states is None:
+        return
+    digest = hashlib.sha256(session.encode("utf-8")).hexdigest()
+    # Phase 2 is cloud only, and only CLAUDE_CODE_REMOTE=true says so: a local
+    # session reaches no phase-2 code past this test.
+    cloud = None
+    if os.environ.get("CLAUDE_CODE_REMOTE") == "true":
+        try:
+            cloud = Cloud(states, digest, session, transcript)
+            cloud.collect()          # every Stop, before phase 1's once-per-session return
+        except Exception:
+            pass
+    try:
+        phase1(states, digest, transcript, cloud)
+    except Exception:
+        pass
+    if cloud is not None and not cloud.attempted:
+        try:
+            upload(None, now(), cloud)
+        except Exception:
+            pass
 
 
 try:
