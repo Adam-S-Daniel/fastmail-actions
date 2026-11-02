@@ -163,8 +163,8 @@ hold before writing.
   only one with Actions tools (`actions_*`), job logs (`get_job_logs`),
   auto-merge and review-thread resolution. Reach: the attached repos.
 - **`github-mcp` — the claude.ai org connector**, in `ListConnectors`, tool
-  prefix varying by surface: the same reads and PR/issue/merge/push/delete
-  writes, none of those four. Reach: a GitHub App allowlist INDEPENDENT of the
+  prefix varying by surface: the same reads and PR/merge/push/delete writes,
+  none of those four; issue writes can 403. Reach: a GitHub App allowlist INDEPENDENT of the
   attached repos. **Probe for it by connector NAME, never a remembered
   prefix**. It checks a PR with `pull_request_read` `method:
   "get_check_runs"` and `"get_status"`; read BOTH (`get_status` can
