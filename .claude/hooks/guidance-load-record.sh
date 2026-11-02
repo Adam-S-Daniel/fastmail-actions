@@ -33,18 +33,27 @@
 #    "session":"<16 hex>","surface":"cli","remote":false,"cli":"2.1.312",
 #    "state":"full","repos":2,"guidance_version":"0123abcd",
 #    "check_expected":true,"check_reported":"match",
-#    "registry_sha":null,"uploaded":null}
+#    "registry_sha":null,"sources":[{"registry":"<owner>/<repo>","ref":"<40 hex>"}],
+#    "sources_dropped":0,"uploaded":null}
 # `session` is a sha256 prefix of the session id, never the id. `surface` and
 # `cli` are the transcript's own `entrypoint` and `version`. `repos` counts the
 # distinct directories holding a Project-type AGENTS.md or CLAUDE.md (a
 # `<repo>/.claude/CLAUDE.md` counts as `<repo>`). `guidance_version` is the
 # 8-hex id fleet-memory.sh wrote into user memory's CLAUDE.md. `check_expected`
-# and `check_reported` are described under THE CHECK VALUE below. `registry_sha`
-# is always null for now: skills-bootstrap.sh's install record
-# (~/.claude/skills/.skills-bootstrap-installed.json) stores each skill's
-# name, registry URL, bundle and digest, but no commit, so there is nothing to
-# read it from. `uploaded` is true or false when an upload was tried, null when
-# it was not. No paths, names, titles or file content are ever recorded.
+# and `check_reported` are described under THE CHECK VALUE below.
+# `registry_sha` is always null, kept for readers that look it up: one session
+# can install from several registries, so `sources` holds them instead.
+# `sources` lists the skills registries and commits skills-bootstrap.sh last
+# installed from, read from the top-level `sources` list of its install record,
+# $HOME/.claude/skills/.skills-bootstrap-installed.json. Only an entry whose
+# `registry` is https://github.com/<owner>/<repo>[.git] and whose `ref` is 40
+# lowercase hex is kept, as "<owner>/<repo>"; entries are deduped and sorted,
+# and at most 16 kept. `sources_dropped` counts the entries rejected or past
+# the cap. Both are null when the install record is missing, not a regular
+# file, over 1 MiB, unreadable, or has no `sources` list (installs before
+# _agent-guidance#398 had none). `uploaded` is true or false when an upload was
+# tried, null when it was not. Apart from registry owner/repo names, no paths,
+# names, titles or file content are ever recorded.
 #
 # THE CHECK VALUE
 # ---------------
@@ -129,6 +138,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -140,6 +150,11 @@ STUB = ("guidance-marker: fleet-stub", "Fleet guidance is delivered once per ses
 CHECK_LINE = re.compile(r"^fleet-guidance check value: ([0-9a-f]{8})$", re.MULTILINE)
 REPORT = re.compile(r"fleet-guidance check: ([0-9a-f]{8}|none)\b")
 ISO = "%Y-%m-%dT%H:%M:%SZ"
+SOURCE_REGISTRY = re.compile(
+    r"https://github\.com/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*?)(\.git)?")
+SOURCE_REF = re.compile(r"[0-9a-f]{40}")
+MAX_SOURCES = 16
+MAX_INSTALL_RECORD = 1 << 20
 START = time.monotonic()
 BUDGET = 15.0
 
@@ -268,6 +283,45 @@ def guidance_version():
     except OSError:
         pass
     return None
+
+
+def registry_sources():
+    """(sources, dropped) from skills-bootstrap.sh's install record, or
+    (None, None) when it has no usable `sources` list. Never raises."""
+    try:
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        path = os.path.join(home, ".claude", "skills", ".skills-bootstrap-installed.json")
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_INSTALL_RECORD:
+            return None, None
+        # O_NOFOLLOW and O_NONBLOCK: the path may have been swapped for a link
+        # or a FIFO since the lstat; fstat confirms what was opened.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None, None
+            raw = handle.read(MAX_INSTALL_RECORD + 1)
+        if len(raw) > MAX_INSTALL_RECORD:
+            return None, None
+        doc = json.loads(raw.decode("utf-8"))
+        listed = doc.get("sources") if isinstance(doc, dict) else None
+        if not isinstance(listed, list):
+            return None, None
+        valid = set()
+        rejected = 0
+        for item in listed:
+            registry = item.get("registry") if isinstance(item, dict) else None
+            ref = item.get("ref") if isinstance(item, dict) else None
+            found = SOURCE_REGISTRY.fullmatch(registry) if isinstance(registry, str) else None
+            if found and isinstance(ref, str) and SOURCE_REF.fullmatch(ref):
+                valid.add(("%s/%s" % (found.group(1), found.group(2)), ref))
+            else:
+                rejected += 1
+        kept = sorted(valid)
+        rejected += max(0, len(kept) - MAX_SOURCES)
+        return [{"registry": r, "ref": c} for r, c in kept[:MAX_SOURCES]], rejected
+    except Exception:
+        return None, None
 
 
 # ── upload ──────────────────────────────────────────────────────────────────
@@ -507,6 +561,7 @@ def main():
         "check_reported": check_outcome(expected, report),
         "registry_sha": None,
     }
+    record["sources"], record["sources_dropped"] = registry_sources()
     line = json.dumps(record, separators=(",", ":"))
     uploaded = None
     if remote:
