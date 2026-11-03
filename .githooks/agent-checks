@@ -327,6 +327,15 @@ run_dated_phrasing() {
 #      (any case, an optional colon): "## TLDR", "# tl;dr:".
 #   4. Some line between it and the next heading (or the end) has text.
 #
+# Closing keywords. The same read also warns, never refuses, about every issue
+# or pull request the description would close: GitHub closes the target of
+# close, closes, closed, fix, fixes, fixed, resolve, resolves or resolved
+# (any case, an optional colon) followed by #N, owner/repo#N or an issue or
+# pull request URL, from any repo, and "For #N" does not. The match is
+# lexical, on the description after the comment removal above, and it prints
+# only the references, never the description. It applies to a pull request
+# opened before pr_tldr_cutoff too, and to a bot's.
+#
 # The payload is the description as it was when the run started: re-running
 # an old run reads the old text. The workflow's `edited` pull_request trigger
 # is what re-runs the check after the description changes.
@@ -345,7 +354,7 @@ pr_tldr_warn() {
 }
 
 run_pr_tldr() {
-  local verdict why msg js
+  local verdict why msg js closes
   case "${GITHUB_EVENT_NAME:-}" in
     pull_request|pull_request_target) ;;
     *) return 0 ;;
@@ -372,14 +381,19 @@ try {
 if (!pr || typeof pr !== "object") process.exit(3);
 const author = pr.user && pr.user.type === "Bot" ? "bot" : "user";
 const created = typeof pr.created_at === "string" ? Date.parse(pr.created_at) : NaN;
-if (!Number.isNaN(created) && created < Date.parse(cutoff)) {
-  console.log("exempt " + author);
-  process.exit(0);
-}
 let body = typeof pr.body === "string" ? pr.body : "";
 body = body.replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?-->/g, "");
 const open = body.indexOf("<!--");
 if (open >= 0) body = body.slice(0, open);
+// Closing keywords (see "Closing keywords" below): a second output line, the
+// issues and pull requests the description would close, each once.
+const closing = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?[ \t]+((?:[\w.-]+\/[\w.-]+)?#\d+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+)/gi;
+const closes = [...new Set([...body.matchAll(closing)].map((m) => m[1]))];
+const closesLine = closes.length ? "\ncloses " + closes.join(" ") : "";
+if (!Number.isNaN(created) && created < Date.parse(cutoff)) {
+  console.log("exempt " + author + closesLine);
+  process.exit(0);
+}
 const lines = body.split("\n");
 let i = 0;
 while (i < lines.length && (/^\s*$/.test(lines[i]) || /^_Requested by .+_\s*$/.test(lines[i]))) i++;
@@ -395,9 +409,18 @@ if (i < lines.length && tldr.test(lines[i])) {
     }
   }
 }
-console.log(verdict + " " + author);
+console.log(verdict + " " + author + closesLine);
 JS
   verdict=$(node - "$GITHUB_EVENT_PATH" "$pr_tldr_cutoff" <<< "$js" 2> /dev/null) || verdict=""
+  # An optional second line, "closes <ref> <ref> ...", names what the
+  # description would close; split it off so the verdict is the first line.
+  closes=""
+  case "$verdict" in
+    *$'\n'closes\ *) closes=${verdict#*$'\n'closes }; verdict=${verdict%%$'\n'*} ;;
+  esac
+  if [ -n "$closes" ]; then
+    pr_tldr_warn "pull request description: it uses a closing keyword, so merging this pull request closes these: $closes. If you meant only to reference one, drop the keyword (write \"For #N\", not \"Closes #N\")."
+  fi
   case "$verdict" in
     "ok "*|"exempt "*) return 0 ;;
     "missing "*) why="it does not begin with a TLDR heading" ;;
