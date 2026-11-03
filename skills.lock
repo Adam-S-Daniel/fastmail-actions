@@ -1,6 +1,6 @@
 {
   "registry": "Adam-S-Daniel/adam-agentskills",
-  "ref": "d0e4900f11c11569652852c388cc9a49eb8cc411",
+  "ref": "6dd9b1efb1b6b96b8842e21145136a6105359ded",
   "bundles": [
     "adam-anything-anywhere",
     "adam-coding-anywhere"
@@ -13,10 +13,11 @@
     "adam-coding-anywhere/disarm-inherited-reach": "sha256:0be479e716d574d8b2ef9868ad9a9d8c4b67413b98d5cf0ae331c79efc511ce2",
     "adam-coding-anywhere/fan-out-triage": "sha256:533e43578831e94c7b443aa1fa6c6a5108e4a4392e640e055edacab65c367a56",
     "adam-coding-anywhere/github-actions-repo-settings": "sha256:b8d280f4811efcb5a95536272263a635299f8665e86ca9295eb94f7a9b5e130a",
+    "adam-coding-anywhere/red-ci-adamdaniel-ai": "sha256:5ec63e5f61b3df9b9acb12eeb20d864f63cc283b27635ac9978269f30817b04c",
     "adam-coding-anywhere/review-bash-ci-reliability": "sha256:fc025b6ccc11282445b6ce1a465b1e80e2fbcbca3cbb66fc9ee1cdfce04dfe2c",
     "adam-coding-anywhere/skills-doctor": "sha256:0c175919f7ea1e6dad9e5dfd6a3af043fca5b49fdfb0ead94649b7e08fe4756d",
     "adam-coding-anywhere/vendor-release-impact-issues": "sha256:b7bc6f17c002a05b5c5c517ddf598c717820ef808d5d240a5e8e9d6e68a7c426",
     "adam-coding-anywhere/workflow-path-audit": "sha256:09be56481068793c7cc18512189c7a1c3fe7eb4eac23edb7a87ea0d71c056f3e"
   },
-  "generated_from": "d0e4900f11c11569652852c388cc9a49eb8cc411"
+  "generated_from": "6dd9b1efb1b6b96b8842e21145136a6105359ded"
 }
