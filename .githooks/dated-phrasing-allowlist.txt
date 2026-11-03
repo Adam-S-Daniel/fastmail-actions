@@ -22,7 +22,6 @@ Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: "repo-owned" no longer identifies
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: is now raised only where every local rung is
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/workflow-path-audit/SKILL.md :: is no longer reviewable as an audit
-Adam-S-Daniel/_agent-guidance docs/reference/adopt-the-whole-system/starter/agent-skills/plugins/<you>-coding-anywhere/skills/workflow-path-audit/SKILL.md :: is no longer reviewable as an audit
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/migrate-claude-memory/SKILL.md :: anymore. And because
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/sync-cc-settings-between-wsl-and-windows/SKILL.md :: more-recently-modified-wins
 Adam-S-Daniel/adam-agentskills plugins/adam-non-coding-local/skills/fastmail/SKILL.md :: Confirm the inbox is now visible
