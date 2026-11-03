@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # guidance-load-record.sh — one line per session: did Claude Code load the FULL
 # fleet guidance, or only the repo stub? And, in cloud sessions only, one line
-# per skill use naming the skill copy it loaded (phase 2, ADR 0036), sent to
-# the private store and nowhere else.
+# per skill use naming the skill copy it loaded (phase 2, ADR 0036). Cloud
+# lines go to one private destination per session: the private repo's branch
+# (ADR 0036), or, when the S3 sink is configured, a private S3 bucket that the
+# private repo ingests from (ADR 0037). Nowhere else.
 #
 # WHAT IT COUNTS
 # --------------
@@ -38,9 +40,10 @@
 #    "registry_sha":null,"sources":[{"registry":"<owner>/<repo>","ref":"<40 hex>"}],
 #    "sources_dropped":0,"uploaded":null}
 # `session` is a sha256 prefix of the session id, never the id. `surface` and
-# `cli` are the transcript's own `entrypoint` and `version`. `repos` counts the
-# distinct directories holding a Project-type AGENTS.md or CLAUDE.md (a
-# `<repo>/.claude/CLAUDE.md` counts as `<repo>`). `guidance_version` is the
+# `cli` are the transcript's own `entrypoint` and `version`, or null when the
+# value is not one the private reader accepts (see SURFACE_RE and CLI_RE).
+# `repos` counts the distinct directories holding a Project-type AGENTS.md or
+# CLAUDE.md (a `<repo>/.claude/CLAUDE.md` counts as `<repo>`). `guidance_version` is the
 # 8-hex id fleet-memory.sh wrote into user memory's CLAUDE.md. `check_expected`
 # and `check_reported` are described under THE CHECK VALUE below.
 # `registry_sha` is always null, kept for readers that look it up: one session
@@ -56,7 +59,8 @@
 # _agent-guidance#398 had none). `uploaded` is true or false when an upload was
 # tried, null when it was not. Apart from registry owner/repo names, this
 # record holds no paths, names, titles or file content. (Phase 2's lines, below,
-# carry skill names, tool-use ids and digests, and go to the private store only.)
+# carry skill names, tool-use ids and digests, and go to the private store or
+# the private bucket only.)
 #
 # THE CHECK VALUE
 # ---------------
@@ -85,7 +89,13 @@
 # -----------------------------
 # A cloud container's state dies with it, so when the session is remote
 # (CLAUDE_CODE_REMOTE=true or CLAUDE_CODE_REMOTE_SESSION_ID set) the same line
-# (without `uploaded`) is appended to events/<YYYY-MM>/cloud-guidance.jsonl on
+# (without `uploaded`) is sent by ONE of two routes, chosen per session:
+#   the S3 sink   when USAGE_SINK_BUCKET, USAGE_SINK_REGION,
+#                 USAGE_SINK_ACCESS_KEY_ID and USAGE_SINK_SECRET_ACCESS_KEY are
+#                 all set and non-empty (see S3 SINK below; no GitHub call at
+#                 all);
+#   the git route otherwise, as follows.
+# The git route appends it to events/<YYYY-MM>/cloud-guidance.jsonl on
 # branch persistent/usage-events of Adam-S-Daniel/adam-agentskills-private,
 # through the contents API. A 409 or 422 on the write (someone else appended
 # first) re-reads the file and retries once. Two credentials, in order:
@@ -126,6 +136,43 @@
 # child of it, or the upload is refused; this user's guidance-record.* dirs
 # left over 10 minutes ago are swept first.
 #
+# S3 SINK (ADR 0037)
+# ------------------
+# For sessions that do not have the private repo attached. Each upload is one
+# HTTPS PUT per object to https://<bucket>.s3.<region>.amazonaws.com/<key>,
+# signed with AWS Signature Version 4 by the standard library alone (hmac,
+# hashlib, urllib; it honors HTTPS_PROXY and the system CA store), with
+# headers If-None-Match: *, Content-Type: application/json,
+# x-amz-content-sha256 (hex sha256 of the body) and x-amz-date, all signed.
+#   key   drop/<YYYY-MM-DD UTC of the send>/<32 lowercase hex of os.urandom>.json
+#   body  {"v":1,"kind":"usage-drop","sent":"<YYYY-MM-DDTHH:MM:SSZ>",
+#          "guidance":[<phase 1's line, if due>],"skills":[<phase 2's lines>]}
+# exactly those keys. A `guidance` item is byte for byte the line the git route
+# appends to cloud-guidance.jsonl (the record without `uploaded`); a `skills`
+# item is byte for byte a phase-2 shard line. When phase 1 and phase 2 are both
+# due they share an object; a body over 262144 bytes is split into several
+# objects, phase 1's line in the first. Per object: 200 is sent (those lines
+# leave the pending file; phase 1's `uploaded` is true); 412 (the key exists)
+# retries once under a new random key; a 403 carrying S3's x-amz-request-id
+# header is a definite no for the session, like the git route's (lines stay
+# pending, no more tries this session), while a 403 without it (a proxy's
+# refusal) is an ordinary failure; any other status, a redirect or no answer
+# is a failure for the backoff. Running out of time after some objects landed
+# retries next Stop without backoff. A malformed bucket name (dots included),
+# region or key id counts as a definite no and sends nothing. The key's date
+# and `sent` are checked to be ASCII digits before anything is sent. In a
+# CLAUDE_CODE_REMOTE=true session a phase-1 line that did not land is held in
+# <state dir>/cloud-skills/<sha256>.guidance.pending and sent again with phase
+# 2's lines, under the same backoff, until it lands (the reader dedupes by
+# session); `uploaded` in sessions.jsonl still tells only the first try. The
+# writer key can only add objects under drop/ and never overwrite one. The
+# secret is read from the environment into memory only: never written to a
+# file or printed, and every USAGE_SINK_* variable is removed from the
+# environment of every subprocess (git, curl, openssl), whichever route
+# runs. Each PUT
+# has the same 10-second cap inside the same budgets as the git route (6 s when
+# phase 2 uploads alone), enforced on the whole call, not only per read.
+#
 # CLOUD SKILL RECORDS (phase 2, ADR 0036)
 # ---------------------------------------
 # Only when CLAUDE_CODE_REMOTE=true (CLAUDE_CODE_REMOTE_SESSION_ID alone is not
@@ -160,10 +207,12 @@
 #    "digest":"<64 hex>"|null,"digest_null_reason":"<reason>"|null}
 # No path (the base directory is resolved and dropped), title, prompt,
 # transcript text, cwd, machine name, raw session id, remote URL or credential
-# is ever written. The upload uses the git path above with the session's own
-# credential, and no App. A rejected push that runs out of time retries next
-# Stop; a network error, 5xx or timeout backs off 2 min, doubling to 64 min;
-# a definite no (403, 404, or push false) stops uploads for the session.
+# is ever written. The upload uses the session's route: the S3 sink above, or
+# the git path above with the session's own credential, and no App. On the git
+# path a rejected push that runs out of time retries next Stop; on either, a
+# network error, 5xx or timeout backs off 2 min, doubling to 64 min, and a
+# definite no (git: 403, 404, or push false; S3: 403) stops uploads for the
+# session.
 # State lives in <state dir>/cloud-skills/ (0700, files 0600, opened with
 # O_NOFOLLOW): the watermarks, the pending lines and a lock taken without
 # waiting, never held across the network. A busy lock skips that Stop.
@@ -177,13 +226,15 @@
 # blocks the session: it prints nothing to stdout, sends its errors nowhere
 # and always exits 0. No python3 means no record.
 #
-# Test seams: GUIDANCE_RECORD_NOW (an ISO 8601 UTC time, e.g.
-# 2026-10-31T12:00:00Z) replaces the clock, phase 2's backoff included;
-# and, read only when GUIDANCE_RECORD_TEST=1 (a leaked value is ignored),
-# GUIDANCE_RECORD_API (default https://api.github.com) replaces the API base
+# Test seams, each read only when GUIDANCE_RECORD_TEST=1 (a leaked value is
+# ignored): GUIDANCE_RECORD_NOW (an ISO 8601 UTC time, e.g.
+# 2026-10-31T12:00:00Z) replaces the clock, phase 2's backoff and the S3
+# sink's x-amz-date included; GUIDANCE_RECORD_API (default https://api.github.com) replaces the API base
 # URL; GUIDANCE_RECORD_GIT (default
 # https://github.com/Adam-S-Daniel/adam-agentskills-private) replaces the git
-# remote. GUIDANCE_RECORD_TEST_SCALE, read only when GUIDANCE_RECORD_TEST=1,
+# remote; USAGE_SINK_ENDPOINT (e.g. http://127.0.0.1:<port>) sends the S3
+# sink's PUTs path style to <endpoint>/<bucket>/<key> instead of AWS, a test
+# hook only. GUIDANCE_RECORD_TEST_SCALE, read only when GUIDANCE_RECORD_TEST=1,
 # shrinks every time budget (the 15 s total, the 10 s call cap, phase 2's
 # 4/1.5/3/6 s caps and the backoff) by a factor in (0, 1]; it never grows one.
 
@@ -198,6 +249,7 @@ python3 -I -S - <<'PY' || true
 import base64
 import datetime
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -206,7 +258,11 @@ import signal
 import stat
 import subprocess
 import tempfile
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 REPO = "Adam-S-Daniel/adam-agentskills-private"
 BRANCH = "persistent/usage-events"
@@ -268,6 +324,10 @@ ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(:[A-Za-z0-9][A-Za-z0-9._-]{0,127})?")
 SKILL_DIR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 CLI_RE = re.compile(r"[0-9][0-9A-Za-z.+-]{0,31}")
+# The transcript's entrypoint, as skills-evals' ingest_usage_sink.py SURFACE_RE
+# accepts it; CLI_RE is its census CLOUD_CLI_RE. A value outside either is sent
+# as null on both routes, so the reader never rejects an object over it.
+SURFACE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 SUBAGENT_FILE_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}\.jsonl")
@@ -287,13 +347,24 @@ BASE_DIR_LINE = "Base directory for this skill: "
 BUILTIN_SKILLS = frozenset({"schedule", "update-config", "loop", "simplify",
                             "artifact-design", "workflow-authoring"})
 TS_FORMATS = ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ")
+# The S3 sink (see S3 SINK in the header): all four set and non-empty choose it.
+SINK_VARS = ("USAGE_SINK_BUCKET", "USAGE_SINK_REGION", "USAGE_SINK_ACCESS_KEY_ID",
+             "USAGE_SINK_SECRET_ACCESS_KEY")
+SINK_MAX_OBJECT = 262144        # bytes in one object's body; more lines split into more objects
+# ASCII digits only ([0-9], never \d, which also matches other scripts' digits).
+SINK_KEY_RE = re.compile(r"drop/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9a-f]{32}\.json")
+SINK_SENT_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+# No dots: a dotted bucket name breaks the *.s3.<region>.amazonaws.com certificate.
+SINK_BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]")
+SINK_REGION_RE = re.compile(r"[a-z]{2}(?:-[a-z0-9]+){1,4}")
+SINK_KEY_ID_RE = re.compile(r"[A-Z0-9]{16,128}")
 # Inherited variables that would point git at some other repository or index.
 GIT_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"})
 
 
 def now():
-    raw = os.environ.get("GUIDANCE_RECORD_NOW", "")
+    raw = seam("GUIDANCE_RECORD_NOW") or ""
     if raw:
         try:
             return datetime.datetime.strptime(raw, ISO).replace(tzinfo=datetime.timezone.utc)
@@ -488,6 +559,9 @@ def run(args, cwd=None, env=None, data=None, cap=CALL_CAP):
     ran past `cap`. stdin is `data` or /dev/null, stderr is discarded. The
     child leads its own process group, so a timeout also kills what it
     spawned (git's remote helper), which would otherwise hold the pipe open."""
+    # No subprocess ever sees the sink's variables, the secret among them.
+    env = {k: v for k, v in (os.environ if env is None else env).items()
+           if not k.startswith("USAGE_SINK_")}
     try:
         proc = subprocess.Popen(args, cwd=cwd, env=env,
                                 stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
@@ -511,7 +585,8 @@ def run(args, cwd=None, env=None, data=None, cap=CALL_CAP):
 
 
 def git_env(extra=None):
-    env = {k: v for k, v in os.environ.items() if k not in GIT_LOCATION_VARS}
+    env = {k: v for k, v in os.environ.items()
+           if k not in GIT_LOCATION_VARS and not k.startswith("USAGE_SINK_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
     if extra:
         env.update(extra)
@@ -814,15 +889,193 @@ def work_dir():
     return work
 
 
+# ── S3 sink ─────────────────────────────────────────────────────────────────
+
+def sink_config():
+    """The four USAGE_SINK_* values when every one is set and non-empty, else
+    None (the git route). Read from the environment only, never stored."""
+    values = [os.environ.get(name) or "" for name in SINK_VARS]
+    if not all(values):
+        return None
+    return dict(zip(("bucket", "region", "key_id", "secret"), values))
+
+
+def sink_usable(cfg):
+    return bool(SINK_BUCKET_RE.fullmatch(cfg["bucket"]) and SINK_REGION_RE.fullmatch(cfg["region"])
+                and SINK_KEY_ID_RE.fullmatch(cfg["key_id"]))
+
+
+def sigv4_authorization(method, path, query, headers, payload_hash, region, service, key_id, secret):
+    """The AWS Signature Version 4 Authorization value. `headers` are the
+    signed headers (host and x-amz-date among them), `path` the canonical,
+    already URI-encoded path, `query` the canonical query string."""
+    lower = {name.lower(): value for name, value in headers.items()}
+    names = sorted(lower)
+    canonical_headers = "".join("%s:%s\n" % (n, " ".join(str(lower[n]).split())) for n in names)
+    signed = ";".join(names)
+    canonical = "\n".join((method, path, query, canonical_headers, signed, payload_hash))
+    stamp = lower["x-amz-date"]
+    scope = "%s/%s/%s/aws4_request" % (stamp[:8], region, service)
+    to_sign = "\n".join(("AWS4-HMAC-SHA256", stamp, scope,
+                         hashlib.sha256(canonical.encode("utf-8")).hexdigest()))
+    key = ("AWS4" + secret).encode("utf-8")
+    for part in (stamp[:8], region, service, "aws4_request"):
+        key = hmac.new(key, part.encode("utf-8"), hashlib.sha256).digest()
+    signature = hmac.new(key, to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    return "AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s" % (
+        key_id, scope, signed, signature)
+
+
+def sink_body(sent, guidance, skills):
+    """One object's body, built from the exact lines: `guidance` is phase 1's
+    line as the git route appends it (or None), `skills` phase 2's lines."""
+    return ('{"v":1,"kind":"usage-drop","sent":"%s","guidance":[%s],"skills":[%s]}'
+            % (sent, guidance or "", ",".join(skills))).encode("utf-8")
+
+
+def sink_batches(line, items):
+    """[(guidance line or None, [(id, text)])], phase 1's line in the first,
+    each body at most SINK_MAX_OBJECT bytes. A line too large for any object
+    (none can be: every field is bounded) is left out and stays pending."""
+    overhead = len(sink_body("2000-01-01T00:00:00Z", None, []))
+    batches, head, current = [], line, []
+    size = overhead + (len(line.encode("utf-8")) if line is not None else 0)
+    for ident, _month, text in items:
+        need = len(text.encode("utf-8")) + 1
+        if overhead + need > SINK_MAX_OBJECT:
+            continue
+        if size + need > SINK_MAX_OBJECT and (current or head is not None):
+            batches.append((head, current))
+            head, current, size = None, [], overhead
+        current.append((ident, text))
+        size += need
+    if current or head is not None:
+        batches.append((head, current))
+    return batches
+
+
+def http_put(url, headers, body, cap):
+    """The HTTP status of one PUT, or 0 for no answer (a network error, a
+    timeout). A redirect is not followed. A 403 without S3's x-amz-request-id
+    header (a proxy's refusal, say) is returned as 0, an ordinary failure, so
+    only S3's own 403 stops the session's tries. The thread bounds the whole
+    call, not only each socket read."""
+    result = [0]
+
+    def go():
+        try:
+            request = urllib.request.Request(url, data=body, method="PUT", headers=headers)
+            with urllib.request.urlopen(request, timeout=cap) as response:
+                result[0] = response.status
+        except urllib.error.HTTPError as error:
+            result[0] = error.code
+            if error.code == 403 and not (error.headers and error.headers.get("x-amz-request-id")):
+                result[0] = 0
+            error.close()
+        except Exception:
+            result[0] = 0
+    worker = threading.Thread(target=go, daemon=True)
+    worker.start()
+    worker.join(cap)
+    return 0 if worker.is_alive() else result[0]
+
+
+def sink_put(cfg, guidance, skills, deadline):
+    """Send one object: 200, 403, 412 (twice), another status, 0 for no
+    answer, or -1 when the budget left no time. A 412 (the key exists)
+    gets one more try under a new random key."""
+    status = -1
+    for _attempt in range(2):
+        cap = cap_for(deadline)
+        if cap < MIN_CALL:
+            return -1
+        when = now()
+        sent = when.strftime(ISO)
+        key = "drop/%s/%s.json" % (when.strftime("%Y-%m-%d"), os.urandom(16).hex())
+        if not (SINK_SENT_RE.fullmatch(sent) and SINK_KEY_RE.fullmatch(key)):
+            return 0                 # a key or time the reader would refuse is never sent
+        body = sink_body(sent, guidance, skills)
+        endpoint = seam("USAGE_SINK_ENDPOINT")
+        if endpoint:
+            # Test hook only (path style against a local server).
+            parts = urllib.parse.urlsplit(endpoint)
+            if parts.scheme not in ("http", "https") or not parts.netloc:
+                return 0
+            host, path = parts.netloc, "%s/%s/%s" % (parts.path.rstrip("/"), cfg["bucket"], key)
+            url = "%s://%s%s" % (parts.scheme, host, path)
+        else:
+            host, path = "%s.s3.%s.amazonaws.com" % (cfg["bucket"], cfg["region"]), "/" + key
+            url = "https://" + host + path
+        payload = hashlib.sha256(body).hexdigest()
+        signed = {"content-type": "application/json", "host": host, "if-none-match": "*",
+                  "x-amz-content-sha256": payload, "x-amz-date": when.strftime("%Y%m%dT%H%M%SZ")}
+        headers = {k: v for k, v in signed.items() if k != "host"}
+        headers["authorization"] = sigv4_authorization("PUT", path, "", signed, payload, cfg["region"],
+                                                       "s3", cfg["key_id"], cfg["secret"])
+        status = http_put(url, headers, body, cap)
+        if status != 412:
+            return status
+    return status
+
+
+def sink_upload(cfg, line, cloud, snap, held=None):
+    """The S3 route of upload(): phase 1's line (or, at a later Stop, the
+    held copy of one that did not land) and phase 2's pending lines in as few
+    objects as fit, phase 1's in the first. Same return value and pending,
+    backoff and budget rules as the git route; in a CLAUDE_CODE_REMOTE=true
+    session a phase-1 line that did not land is held and retried with them."""
+    guidance = line if line is not None else held
+    outcome, sent, uploaded = "fail", set(), False
+    try:
+        if line is None:
+            deadline = time.monotonic() + min(NET_BUDGET, remaining() - MIN_CALL / 2)
+        else:
+            deadline = None
+        if not sink_usable(cfg):
+            outcome = "nocred"   # a malformed bucket, region or key id can never work
+            return False if line is not None else None
+        for head, items in sink_batches(guidance, snap or []):
+            status = sink_put(cfg, head, [t for _i, t in items], deadline)
+            if status == 200:
+                sent.update(i for i, _t in items)
+                uploaded = uploaded or head is not None
+                continue
+            if status == 403:
+                outcome = "nocred"   # a definite no: stop S3 tries for the session
+            elif status == -1 and sent:
+                outcome = "race"     # out of time after progress: next Stop, no backoff
+            else:
+                outcome = "fail"
+            break
+        else:
+            outcome = "ok"
+        return uploaded if line is not None else None
+    except Exception:
+        return False if line is not None else None
+    finally:
+        if cloud is not None and (snap or guidance is not None):
+            try:
+                cloud.finish(outcome, snap or [], sent,
+                             guidance=(guidance, uploaded) if guidance is not None else None)
+            except Exception:
+                pass
+
+
 def upload(line, when, cloud=None):
     """Phase 1's `uploaded` for `line` (None when `line` is None). With
-    `cloud` due, its pending lines go in the same commit as `line`, or alone."""
-    snap = None
+    `cloud` due, its pending lines go in the same commit as `line`, or alone.
+    With the S3 sink configured, they go to it instead, and nothing to GitHub."""
+    snap, held = None, None
+    sink = sink_config()
     if cloud is not None:
         cloud.attempted = True
         snap = cloud.snapshot()
-    if line is None and not snap:
+        if sink is not None and line is None:
+            held = cloud.held_guidance()
+    if line is None and not snap and held is None:
         return None
+    if sink is not None:
+        return sink_upload(sink, line, cloud, snap, held)
     outcome = "fail"
     work = None
     try:
@@ -1531,10 +1784,34 @@ class Cloud:
         finally:
             os.close(fd)
 
-    def finish(self, outcome, snap):
+    def held_guidance(self):
+        """The S3 route's held phase-1 line, or None: none held, a definite
+        no-credential answer earlier, or still backing off."""
+        if not self.safe():
+            return None
+        fd = self.lock()
+        if fd is None:
+            return None
+        try:
+            st = self.load_state()
+            if st["nocred"] or (st["fails"] > 0 and epoch() < st["next_try"]):
+                return None
+            data = read_small(self.path + ".guidance.pending", MAX_STATE)
+            try:
+                text = data.decode("utf-8").strip() if data else ""
+                doc = json.loads(text) if text else None
+            except ValueError:
+                return None
+            return text if isinstance(doc, dict) and doc.get("kind") == "guidance-load" else None
+        finally:
+            os.close(fd)
+
+    def finish(self, outcome, snap, sent=None, guidance=None):
         """Under a fresh lock: drop the uploaded ids from pending and record
-        the outcome. A busy lock leaves both; the next Stop re-uploads and
-        the shard dedupes by id."""
+        the outcome. `sent`, when given, is the ids that landed (the S3 route
+        can land some objects and not others); otherwise "ok" means all of
+        `snap`. A busy lock leaves both; the next Stop re-uploads and the
+        reader dedupes by id."""
         if not self.safe():
             return
         fd = self.lock()
@@ -1542,9 +1819,21 @@ class Cloud:
             return
         try:
             st, t = self.load_state(), epoch()
-            if outcome == "ok":
-                done = {i for i, _m, _t in snap}
+            done = set(sent) if sent is not None else (
+                {i for i, _m, _t in snap} if outcome == "ok" else set())
+            if done:
                 self.save_pending([p for p in self.load_pending() if p[0] not in done])
+            if guidance is not None:
+                # (phase-1 line, landed): hold it for the next Stop, or let it go.
+                text, landed = guidance
+                if landed:
+                    try:
+                        os.unlink(self.path + ".guidance.pending")
+                    except FileNotFoundError:
+                        pass
+                else:
+                    write_atomic(self.path + ".guidance.pending", (text + "\n").encode("utf-8"))
+            if outcome == "ok":
                 st["fails"], st["next_try"] = 0, 0
             elif outcome == "race":
                 st["next_try"] = t
@@ -1590,9 +1879,9 @@ def phase1(states, digest, transcript, cloud):
         "ts": when.strftime(ISO),
         "kind": "guidance-load",
         "session": digest[:16],
-        "surface": surface,
+        "surface": surface if isinstance(surface, str) and SURFACE_RE.fullmatch(surface) else None,
         "remote": remote,
-        "cli": cli,
+        "cli": cli if isinstance(cli, str) and CLI_RE.fullmatch(cli) else None,
         "state": state,
         "repos": repos,
         "guidance_version": guidance_version(),
@@ -1645,9 +1934,11 @@ def main():
             pass
 
 
-try:
-    main()
-except Exception:
-    pass
+# Tests load this source as a module (any other __name__) to call its helpers.
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        pass
 PY
 exit 0
