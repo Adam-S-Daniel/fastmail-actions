@@ -118,8 +118,13 @@ check_lessons() {
   :
 }
 
+# Codex's limit for project instructions, in bytes: it truncates AGENTS.md at
+# this byte without any error, so the agents-md-size check refuses a change
+# that leaves the root AGENTS.md longer.
+CODEX_PROJECT_DOC_MAX_BYTES=32768
+
 # Reads NUL-separated paths on stdin and refuses the ones that must never be
-# committed.
+# committed, or the root AGENTS.md when it is too long for Codex.
 check_paths() {
   local path
   while IFS= read -r -d '' path; do
@@ -144,6 +149,16 @@ check_paths() {
     if $is_skill_file \
         && grep -Eq '(^|[[:space:]])!`|^[[:space:]]*```!' <<<"$(file_content "$path")"; then
       problem skill-shell "$path: a line starts a shell command that Claude Code runs when the skill loads (an exclamation mark then a backtick, at line start or after a space, or a code fence opened with a backtick fence and an exclamation mark). It runs before the model reads the skill, so no review and no prompt-injection defense sees it. Have the skill tell the agent to run the command, or move the command into a script the skill calls."
+    fi
+    # The root AGENTS.md, measured in bytes in the content being checked. It
+    # is counted in the run log only when the change touched that file.
+    if [ "$path" = AGENTS.md ]; then
+      note_ran agents-md-size
+      agents_size=$(file_content "$path" | wc -c)
+      agents_size=$((agents_size))
+      if [ "$agents_size" -gt "$CODEX_PROJECT_DOC_MAX_BYTES" ]; then
+        problem agents-md-size "$path: it is $agents_size bytes, over the ${CODEX_PROJECT_DOC_MAX_BYTES}-byte limit. Codex silently truncates project instructions at byte $CODEX_PROJECT_DOC_MAX_BYTES, so everything past it never reaches a Codex session, with no error. Shorten it until wc -c AGENTS.md prints $CODEX_PROJECT_DOC_MAX_BYTES or less: move detail into docs/ and link to it."
+      fi
     fi
     check_lessons "$path" < /dev/null
   done
