@@ -1,0 +1,68 @@
+name: Send self-alert
+
+# Emails a short alert to the account owner. The From and To addresses come
+# from the SELF_ALERT_FROM and SELF_ALERT_TO secrets, so no address is in this
+# public repo. The inputs are visible in a public repo's run metadata: send
+# only fixed, non-sensitive text. The run log shows only a status line.
+
+on:
+  workflow_dispatch:
+    inputs:
+      subject:
+        description: "Alert subject (fixed, non-sensitive text only: this repo is public)"
+        required: true
+        type: string
+      body:
+        description: "Alert body (fixed, non-sensitive text only: this repo is public)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  send-self-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Enable mock mode under act
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: |
+          echo "FASTMAIL_MOCK_DIR=${{ github.workspace }}/mocks" >> "$GITHUB_ENV"
+          echo "FASTMAIL_MOCK_OUTBOX=${{ github.workspace }}/act-outbox.jsonl" >> "$GITHUB_ENV"
+
+      # act-only: the default act runner image has no pwsh; GitHub-hosted
+      # ubuntu-latest already does, so this is skipped on real runs.
+      - name: Ensure PowerShell (act only)
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: |
+          command -v pwsh >/dev/null 2>&1 && exit 0
+          . /etc/os-release
+          wget -q "https://packages.microsoft.com/config/ubuntu/${VERSION_ID}/packages-microsoft-prod.deb" -O /tmp/pmc.deb
+          sudo dpkg -i /tmp/pmc.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq powershell
+
+      # Inputs are read from the event payload, NOT interpolated into this
+      # script, so the rendered command never echoes them.
+      - name: Send self-alert
+        shell: pwsh
+        env:
+          FASTMAIL_API_TOKEN: ${{ secrets.FASTMAIL_API_TOKEN }}
+          SELF_ALERT_FROM: ${{ secrets.SELF_ALERT_FROM }}
+          SELF_ALERT_TO: ${{ secrets.SELF_ALERT_TO }}
+        run: |
+          $ev = Get-Content -Raw $env:GITHUB_EVENT_PATH | ConvertFrom-Json
+          $subject = "$($ev.inputs.subject)"
+          $body = "$($ev.inputs.body)"
+          ./scripts/Send-SelfAlert.ps1 -Subject $subject -Body $body
+
+      # act-only: show the alert that would have been emailed (local log only).
+      - name: Show mocked alert (act only)
+        if: ${{ env.ACT == 'true' }}
+        shell: bash
+        run: test -f "${{ github.workspace }}/act-outbox.jsonl" && cat "${{ github.workspace }}/act-outbox.jsonl" || echo "(no mock outbox)"

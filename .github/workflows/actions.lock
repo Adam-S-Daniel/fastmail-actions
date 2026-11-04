@@ -13,6 +13,8 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'dependabot/fetch-metadata@v3.1.0'
     '.github/workflows/scheduled-run-health.yml': []
+    '.github/workflows/send-self-alert.yml':
+        - 'actions/checkout@v7.0.1'
     '.github/workflows/tests.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@v7.0.2'
