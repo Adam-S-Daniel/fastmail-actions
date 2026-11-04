@@ -12,6 +12,7 @@ thin wrappers that dispatch the workflows here.
 |---|---|
 | **Add From address** (`add-from-address.yml`) | Add one or more given addresses as selectable From identities. |
 | **Add received-from addresses** (`add-received-from-addresses.yml`) | Discover alias addresses of yours that have received mail and add those. |
+| **Send self-alert** (`send-self-alert.yml`) | Email a short alert to the account owner (see [Send self-alert](#send-self-alert)). |
 | **Tests** (`tests.yml`) | Runs the Pester suite on Linux in mock mode (CI). |
 
 ## Privacy — the report is emailed, never logged
@@ -167,6 +168,38 @@ The filter is off by default, not gone: the emailed report still names the known
 correspondents behind each candidate (or says `no known correspondent`), so you
 can see which ones the strict filter would have dropped.
 
+## Send self-alert
+
+`send-self-alert.yml` emails a short plain-text alert to the account owner, so a
+scheduled task elsewhere can notify you without holding a Fastmail token. It
+sends from `SELF_ALERT_FROM` to `SELF_ALERT_TO` over JMAP; the run log shows
+only `self-alert sent`.
+
+| Input | Required | Notes |
+|---|---|---|
+| `subject` | yes | Flattened to one line, trimmed, capped at 200 characters. |
+| `body` | yes | Trimmed, capped at 4000 characters. |
+
+An empty subject or body fails the run; nothing is sent.
+
+Two repository secrets, in addition to `FASTMAIL_API_TOKEN`. The values are
+never committed, and `SELF_ALERT_FROM` must already be a sending identity on
+the account (see `add-from-address`):
+
+```sh
+gh secret set SELF_ALERT_FROM --repo Adam-S-Daniel/fastmail-actions
+gh secret set SELF_ALERT_TO   --repo Adam-S-Daniel/fastmail-actions
+```
+
+**Inputs are visible in a public repo's run.** This repo is public, so send only
+fixed, non-sensitive text (for example `"Nightly backup failed"`); never put
+addresses, tokens or other personal data in `subject` or `body`.
+
+```sh
+gh workflow run send-self-alert.yml --repo Adam-S-Daniel/fastmail-actions \
+  -f subject="Nightly backup failed" -f body="The nightly backup task exited with an error."
+```
+
 ## Repository layout
 
 ```
@@ -175,6 +208,7 @@ scripts/             PowerShell (pwsh) — cross-platform, run on ubuntu-latest
   FastmailJmap.psm1  shared JMAP transport + discovery logic + reporting
   Add-FromAddress.ps1
   Add-ReceivedFromAddresses.ps1
+  Send-SelfAlert.ps1
 tests/               Pester tests (*.Tests.ps1)
 mocks/               fake JMAP account (session.json + fixture.json)
 act/                 secrets template for local `act` runs
