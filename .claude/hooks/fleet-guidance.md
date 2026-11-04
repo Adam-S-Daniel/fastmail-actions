@@ -10,7 +10,7 @@ Only what is **specific to this account and learned the hard way**; depth
 lives in each repo's `docs/` and the skills registry. Delivered once per
 session to BOTH `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, so a rule for
 every agent goes here, not in `~/.claude/AGENTS.md` (one tool only). Keep it
-under 25 KiB; Codex silently cuts a full-mode AGENTS.md at 32 KiB. The
+under 26 KiB; Codex silently cuts a full-mode AGENTS.md at 32 KiB. The
 incident behind each rule: `docs/evidence/base-md-incidents.md`.
 
 ## Working in these repos
@@ -70,6 +70,21 @@ check becomes a check first: fleet-wide in `_agent-guidance`'s
 one without it, and a `type: user` note about the person is exempt. The
 **`finding-unknowns`** skill is the full workflow: use it on unfamiliar code,
 a new domain or subjective criteria.
+
+## Turn lessons into checks, skills and guidance
+
+When a mistake, an owner correction or a procedure you had to work out
+could recur, capture it before you finish, unasked (the one addition "fix
+what was asked" allows), in its own commit:
+
+- **A check first**, when a commit can show the problem: fleet-wide in
+  `_agent-guidance`'s `templates/agent-checks/agent-checks`, one repo's in
+  `.agent-checks/local.sh`.
+- **Else a skill** for a multi-step procedure, in the skills registry.
+- **Else a guidance section** in `_agent-guidance`'s `agents-md/base.md`.
+
+Name each in a commit trailer, `Captures: check|skill|section <id>`; the
+evals dashboard counts these and their blocks, uses and eval verdicts.
 
 ## Workstation layout
 
