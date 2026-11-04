@@ -90,17 +90,19 @@
 # A cloud container's state dies with it, so when the session is remote
 # (CLAUDE_CODE_REMOTE=true or CLAUDE_CODE_REMOTE_SESSION_ID set) the same line
 # (without `uploaded`) is sent by ONE of two routes, chosen per session:
-#   the S3 sink   when USAGE_SINK_BUCKET, USAGE_SINK_REGION,
-#                 USAGE_SINK_ACCESS_KEY_ID and USAGE_SINK_SECRET_ACCESS_KEY are
-#                 all set and non-empty (see S3 SINK below; no GitHub call at
-#                 all);
+#   the S3 sink   when USAGE_SINK_BUCKET and USAGE_SINK_REGION are set with
+#                 either USAGE_SINK_SIGNING=proxy (the agent proxy signs) or
+#                 USAGE_SINK_ACCESS_KEY_ID and USAGE_SINK_SECRET_ACCESS_KEY
+#                 (see S3 SINK below; no GitHub call at all);
 #   the git route otherwise, as follows.
 # The git route appends it to events/<YYYY-MM>/cloud-guidance.jsonl on
 # branch persistent/usage-events of Adam-S-Daniel/adam-agentskills-private,
-# through the contents API. A 409 or 422 on the write (someone else appended
-# first) re-reads the file and retries once. Two credentials, in order:
+# by git push, using the session's own credential, as follows. A hosted
+# session's cloud environment variables are readable by every session in that
+# environment, so no write credential may live there that the proxy could hold
+# instead.
 #
-# 1. The session's own. A hosted session's agent proxy REPLACES any
+# The session's own credential. A hosted session's agent proxy REPLACES any
 #    Authorization header sent to api.github.com with the session's GitHub
 #    credential, which reaches only the repos attached to the session, and it
 #    refuses /app/* paths outright (measured 2026-10-31: "Bearer garbage" got
@@ -120,12 +122,15 @@
 #    Stop, both files go in that one commit; if that commit does not land and
 #    time remains, phase 1's file is tried again alone, so a phase-2 problem
 #    never costs phase 1's once-per-session record.
-# 2. A GitHub App, where no proxy rewrites the header: when
-#    USAGE_WRITER_APP_CLIENT_ID and USAGE_WRITER_APP_PEM (the PEM text, or that
-#    text base64-encoded) are set, an installation token minted from that App,
-#    scoped to that one repo with contents: write. The JWT and token reach curl
-# through `--config -` on stdin, never argv; the PEM is written to a 0600 file
-# in a private temp dir for openssl and removed. No token, PEM or response
+# If the session's credential cannot push, the upload is recorded as not
+# uploaded (False). There is no GitHub App fallback: the hosted agent proxy
+# rewrites any Authorization header to api.github.com and refuses /app/*, so an
+# App key never worked in a cloud session (measured 2026-10-31), the upload
+# only runs in remote sessions, and keeping the code invited a GitHub App
+# private key into a cloud environment variable. USAGE_WRITER_APP_* variables
+# an old environment still holds are never read, and are removed from every
+# subprocess's environment.
+# No token or response
 # body is ever printed. Every call has a 10-second cap, inside a 15-second
 # overall budget, under the 20-second hook timeout. Every subprocess gets
 # /dev/null for stdin and its own process group, which a timeout kills whole;
@@ -139,11 +144,21 @@
 # S3 SINK (ADR 0037)
 # ------------------
 # For sessions that do not have the private repo attached. Each upload is one
-# HTTPS PUT per object to https://<bucket>.s3.<region>.amazonaws.com/<key>,
-# signed with AWS Signature Version 4 by the standard library alone (hmac,
-# hashlib, urllib; it honors HTTPS_PROXY and the system CA store), with
-# headers If-None-Match: *, Content-Type: application/json,
-# x-amz-content-sha256 (hex sha256 of the body) and x-amz-date, all signed.
+# HTTPS PUT per object to https://<bucket>.s3.<region>.amazonaws.com/<key>
+# by the standard library alone (urllib; it honors HTTPS_PROXY and the system
+# CA store), with headers If-None-Match: *, Content-Type: application/json and
+# x-amz-content-sha256 (hex sha256 of the body). Two modes:
+#   proxy   USAGE_SINK_BUCKET, USAGE_SINK_REGION and USAGE_SINK_SIGNING=proxy
+#           (exactly that value; it wins when keys are also set). The agent
+#           proxy holds the AWS key as a network secret (type AWS SigV4) and
+#           signs the request for the virtual-hosted S3 host itself, so the
+#           key never enters the session. The hook sends no Authorization and
+#           no x-amz-date header; the proxy adds both.
+#   static  all four of USAGE_SINK_BUCKET, _REGION, _ACCESS_KEY_ID and
+#           _SECRET_ACCESS_KEY: the hook signs with AWS Signature Version 4
+#           (hmac, hashlib), adding x-amz-date; every header is signed. A
+#           fallback for a host without that proxy; never set it in a cloud
+#           environment, whose variables every session there can read.
 #   key   drop/<YYYY-MM-DD UTC of the send>/<32 lowercase hex of os.urandom>.json
 #   body  {"v":1,"kind":"usage-drop","sent":"<YYYY-MM-DDTHH:MM:SSZ>",
 #          "guidance":[<phase 1's line, if due>],"skills":[<phase 2's lines>]}
@@ -165,10 +180,10 @@
 # <state dir>/cloud-skills/<sha256>.guidance.pending and sent again with phase
 # 2's lines, under the same backoff, until it lands (the reader dedupes by
 # session); `uploaded` in sessions.jsonl still tells only the first try. The
-# writer key can only add objects under drop/ and never overwrite one. The
+# writer key (either mode) can only add objects under drop/ and never overwrite one. The
 # secret is read from the environment into memory only: never written to a
 # file or printed, and every USAGE_SINK_* variable is removed from the
-# environment of every subprocess (git, curl, openssl), whichever route
+# environment of every subprocess (git, curl), whichever route
 # runs. Each PUT
 # has the same 10-second cap inside the same budgets as the git route (6 s when
 # phase 2 uploads alone), enforced on the whole call, not only per read.
@@ -246,7 +261,6 @@ GUIDANCE_HOOK_INPUT="$(cat 2>/dev/null)" || GUIDANCE_HOOK_INPUT=""
 export GUIDANCE_HOOK_INPUT
 
 python3 -I -S - <<'PY' || true
-import base64
 import datetime
 import hashlib
 import hmac
@@ -350,6 +364,9 @@ TS_FORMATS = ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ")
 # The S3 sink (see S3 SINK in the header): all four set and non-empty choose it.
 SINK_VARS = ("USAGE_SINK_BUCKET", "USAGE_SINK_REGION", "USAGE_SINK_ACCESS_KEY_ID",
              "USAGE_SINK_SECRET_ACCESS_KEY")
+SINK_SIGNING_VAR = "USAGE_SINK_SIGNING"   # "proxy": the agent proxy signs, no key here
+# Variable-name prefixes no subprocess may inherit (USAGE_WRITER_APP_ is retired).
+SECRET_PREFIXES = ("USAGE_SINK_", "USAGE_WRITER_APP_")
 SINK_MAX_OBJECT = 262144        # bytes in one object's body; more lines split into more objects
 # ASCII digits only ([0-9], never \d, which also matches other scripts' digits).
 SINK_KEY_RE = re.compile(r"drop/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9a-f]{32}\.json")
@@ -559,9 +576,10 @@ def run(args, cwd=None, env=None, data=None, cap=CALL_CAP):
     ran past `cap`. stdin is `data` or /dev/null, stderr is discarded. The
     child leads its own process group, so a timeout also kills what it
     spawned (git's remote helper), which would otherwise hold the pipe open."""
-    # No subprocess ever sees the sink's variables, the secret among them.
+    # No subprocess ever sees the sink's variables, the secret among them,
+    # nor a retired App credential an old environment may still hold.
     env = {k: v for k, v in (os.environ if env is None else env).items()
-           if not k.startswith("USAGE_SINK_")}
+           if not k.startswith(SECRET_PREFIXES)}
     try:
         proc = subprocess.Popen(args, cwd=cwd, env=env,
                                 stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
@@ -586,7 +604,7 @@ def run(args, cwd=None, env=None, data=None, cap=CALL_CAP):
 
 def git_env(extra=None):
     env = {k: v for k, v in os.environ.items()
-           if k not in GIT_LOCATION_VARS and not k.startswith("USAGE_SINK_")}
+           if k not in GIT_LOCATION_VARS and not k.startswith(SECRET_PREFIXES)}
     env["GIT_TERMINAL_PROMPT"] = "0"
     if extra:
         env.update(extra)
@@ -610,10 +628,6 @@ def git(args, cwd=None, env=None, deadline=None):
 
 
 # ── upload ──────────────────────────────────────────────────────────────────
-
-def b64url(data):
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
 
 def api(work, method, url, bearer, body=None, deadline=None):
     """(status, parsed JSON or None). The bearer, if any, reaches curl on stdin
@@ -653,54 +667,6 @@ def api(work, method, url, bearer, body=None, deadline=None):
     except OSError:
         pass
     return status, parsed
-
-
-def app_jwt(work, client_id, pem, at):
-    key = os.path.join(work, "key.pem")
-    fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(pem if pem.endswith("\n") else pem + "\n")
-    try:
-        head = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
-        body = b64url(json.dumps({"iat": at - 60, "exp": at + 540, "iss": client_id},
-                                 separators=(",", ":")).encode())
-        code, signed = run(["openssl", "dgst", "-sha256", "-sign", key],
-                           data=("%s.%s" % (head, body)).encode("ascii"), cap=5 * SCALE)
-        if code != 0 or not signed:
-            return None
-        return "%s.%s.%s" % (head, body, b64url(signed))
-    finally:
-        os.unlink(key)
-
-
-def append(work, base, token, line, when):
-    path = "events/%s/cloud-guidance.jsonl" % when.strftime("%Y-%m")
-    url = "%s/repos/%s/contents/%s" % (base, REPO, path)
-    for _attempt in range(2):
-        status, doc = api(work, "GET", "%s?ref=%s" % (url, BRANCH), token)
-        if status == 200 and isinstance(doc, dict) and doc.get("encoding") == "base64" \
-                and isinstance(doc.get("sha"), str):
-            try:
-                old = base64.b64decode(doc.get("content") or "")
-            except ValueError:
-                return False
-            sha = doc["sha"]
-        elif status == 404:
-            old, sha = b"", None
-        else:
-            return False
-        if old and not old.endswith(b"\n"):
-            old += b"\n"
-        body = {"message": "guidance-load event", "branch": BRANCH,
-                "content": base64.b64encode(old + line.encode("utf-8") + b"\n").decode("ascii")}
-        if sha:
-            body["sha"] = sha
-        status, _doc = api(work, "PUT", url, token, body)
-        if status in (200, 201):
-            return True
-        if status not in (409, 422):
-            return False
-    return False
 
 
 def guidance_edit(line, when):
@@ -837,31 +803,6 @@ def git_commit(work, edits, deadline, message, name="c"):
         tip_ref = "FETCH_HEAD"
 
 
-def app_token(work, base, when):
-    client_id = os.environ.get("USAGE_WRITER_APP_CLIENT_ID", "")
-    pem = os.environ.get("USAGE_WRITER_APP_PEM", "")
-    if not client_id or not pem or shutil.which("openssl") is None:
-        return None
-    if "-----BEGIN" not in pem:
-        # An environment-variable field may not hold a multi-line value, so
-        # the key may also be given base64-encoded.
-        try:
-            pem = base64.b64decode("".join(pem.split()), validate=True).decode("ascii")
-        except ValueError:
-            return None
-    jwt = app_jwt(work, client_id, pem, int(when.timestamp()))
-    if not jwt:
-        return None
-    status, doc = api(work, "GET", "%s/repos/%s/installation" % (base, REPO), jwt)
-    inst = doc.get("id") if status == 200 and isinstance(doc, dict) else None
-    if not isinstance(inst, int):
-        return None
-    status, doc = api(work, "POST", "%s/app/installations/%d/access_tokens" % (base, inst), jwt,
-                      {"repositories": [REPO.split("/", 1)[1]], "permissions": {"contents": "write"}})
-    token = doc.get("token") if status == 201 and isinstance(doc, dict) else None
-    return token if isinstance(token, str) and token else None
-
-
 def work_dir():
     """A private temp dir for one upload, or None. The temp root is resolved
     once (a symlinked /tmp, as on macOS, is fine), and the new dir must
@@ -892,15 +833,24 @@ def work_dir():
 # ── S3 sink ─────────────────────────────────────────────────────────────────
 
 def sink_config():
-    """The four USAGE_SINK_* values when every one is set and non-empty, else
-    None (the git route). Read from the environment only, never stored."""
+    """The S3 sink's configuration, or None (the git route). Mode "proxy":
+    bucket and region set and USAGE_SINK_SIGNING exactly "proxy" (the agent
+    proxy signs; no key is here); it wins over keys. Mode "static": all four
+    of the other USAGE_SINK_* values set and non-empty. Read from the
+    environment only, never stored."""
     values = [os.environ.get(name) or "" for name in SINK_VARS]
+    if values[0] and values[1] and os.environ.get(SINK_SIGNING_VAR) == "proxy":
+        return {"mode": "proxy", "bucket": values[0], "region": values[1]}
     if not all(values):
         return None
-    return dict(zip(("bucket", "region", "key_id", "secret"), values))
+    cfg = dict(zip(("bucket", "region", "key_id", "secret"), values))
+    cfg["mode"] = "static"
+    return cfg
 
 
 def sink_usable(cfg):
+    if cfg["mode"] == "proxy":
+        return bool(SINK_BUCKET_RE.fullmatch(cfg["bucket"]) and SINK_REGION_RE.fullmatch(cfg["region"]))
     return bool(SINK_BUCKET_RE.fullmatch(cfg["bucket"]) and SINK_REGION_RE.fullmatch(cfg["region"])
                 and SINK_KEY_ID_RE.fullmatch(cfg["key_id"]))
 
@@ -1008,10 +958,15 @@ def sink_put(cfg, guidance, skills, deadline):
             url = "https://" + host + path
         payload = hashlib.sha256(body).hexdigest()
         signed = {"content-type": "application/json", "host": host, "if-none-match": "*",
-                  "x-amz-content-sha256": payload, "x-amz-date": when.strftime("%Y%m%dT%H%M%SZ")}
-        headers = {k: v for k, v in signed.items() if k != "host"}
-        headers["authorization"] = sigv4_authorization("PUT", path, "", signed, payload, cfg["region"],
-                                                       "s3", cfg["key_id"], cfg["secret"])
+                  "x-amz-content-sha256": payload}
+        if cfg["mode"] == "proxy":
+            # The agent proxy signs and dates the request itself.
+            headers = {k: v for k, v in signed.items() if k != "host"}
+        else:
+            signed["x-amz-date"] = when.strftime("%Y%m%dT%H%M%SZ")
+            headers = {k: v for k, v in signed.items() if k != "host"}
+            headers["authorization"] = sigv4_authorization(
+                "PUT", path, "", signed, payload, cfg["region"], "s3", cfg["key_id"], cfg["secret"])
         status = http_put(url, headers, body, cap)
         if status != 412:
             return status
@@ -1108,10 +1063,7 @@ def upload(line, when, cloud=None):
             return outcome == "ok" if line is not None else None
         if status in (403, 404) or (status == 200 and isinstance(doc, dict)):
             outcome = "nocred"       # a definite answer: this session cannot push there
-        if line is None:
-            return None
-        token = app_token(work, base, when)
-        return append(work, base, token, line, when) if token else False
+        return False if line is not None else None
     except Exception:
         return False if line is not None else None
     finally:
