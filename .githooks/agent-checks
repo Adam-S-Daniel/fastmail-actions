@@ -56,7 +56,9 @@
 # version of the runner a repo had, or null when no hash tool is found. The line
 # holds no paths, messages, branch names or user names. AGENT_CHECKS_LOG=off
 # turns it off. Logging is best effort: a failure is silent and never changes
-# the exit code or the output.
+# the exit code or the output. In CI each refusal is also an `::error`
+# annotation titled `agent-checks <id>`, so a report can read the failed ids
+# from the check run's annotations.
 set -u
 
 failed=0
@@ -75,7 +77,16 @@ note_ran() {
 problem() {
   local id=$1
   shift
-  printf 'agent-checks: %s\n' "$*" >&2
+  case "$id" in
+    ''|*[!a-z0-9-]*) printf 'agent-checks: %s\n' "$*" >&2 ;;
+    *)
+      if [ "${GITHUB_ACTIONS:-}" = true ]; then
+        printf '::error title=agent-checks %s::agent-checks: %s\n' "$id" "$*" >&2
+      else
+        printf 'agent-checks: %s\n' "$*" >&2
+      fi
+      ;;
+  esac
   failed=1
   note_ran "$id"
   case "$id" in ''|*[!a-z0-9-]*) return 0 ;; esac
