@@ -13,80 +13,21 @@ guidance-marker: fleet-stub (transcript counts use this line; keep it)
 
 ## Fleet guidance is delivered once per session — not by this file
 
-The account's full guidance — incidents, fleet policy, machine layout, the
-traps that cost real outages — is installed into **user memory**
-(`~/.claude/CLAUDE.md`) by the `fleet-memory` SessionStart hook, so it is
-loaded **once per session** no matter how many repos are attached
-([inlined per repo, it took 332.3k tokens](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/evidence/2026-08-29-guidance-inlined-in-every-repo.md)).
+The full guidance, floor rules included, is installed into user memory by
+the `fleet-memory` SessionStart hook, whose verdict line says whether it
+loaded. `installed` or `current`: it is in context. `DEGRADED` or no verdict:
+it is not, so read [`agents-md/base.md`](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/agents-md/base.md)
+before non-trivial work and say you ran degraded. `skipped`: read it too, but
+it is the owner's choice, so do not report or "fix" it. Always, and above all
+before you have read it: never push to a default branch, force-push a shared
+branch, commit a secret, or print personal data to a CI log. Keep this file
+under 32 KiB (Codex silently truncates it).
 
-**Check the session-start verdict before you rely on it.** The hook prints one
-line:
-
-- `fleet-guidance: installed (v<id>, <n> bytes)` or `fleet-guidance: current` —
-  the full guidance is in context. Use it.
-- `fleet-guidance: DEGRADED — <reason>` — it is **not** in context. You have
-  only what is below. Read `agents-md/base.md` in the `_agent-guidance`
-  checkout (or on GitHub) before non-trivial work, and say in your reply that
-  you were running degraded.
-- `fleet-guidance: skipped (FLEET_GUIDANCE_SKIP set)` — also not in context,
-  but by the machine owner's deliberate choice, not a fault. User memory is
-  GLOBAL on a durable machine, so the guidance would otherwise load in every
-  unrelated project on that box; `FLEET_GUIDANCE_SKIP` opts out and removes any
-  block an earlier session installed. Read `agents-md/base.md` the same way you
-  would when degraded — just don't report it as a problem or try to "fix" it.
-
-No verdict at all means the hook never ran — treat that as DEGRADED.
-
-**Say what loaded, in your first reply to the user in a session.** The
-installed guidance ends with a line `fleet-guidance check value: <8 hex>`.
-Begin that reply with `fleet-guidance check: <the value>`, copied from that
-line, or `fleet-guidance check: none` when no such line is in your context.
-Never guess a value or copy one from anywhere else: the session's record
-compares it with what actually loaded. Only in replies to the user — never in
-commits, PR or issue text, files or prompts for other agents.
-
-## Codex reads the same block, from `~/.codex/AGENTS.md`
-
-The hook writes the same block there whenever `~/.codex` exists. Setup for
-local Codex and Codex Cloud, and how to verify delivery:
-[`docs/codex-cloud.md`](https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/codex-cloud.md).
-
-## The floor: rules that hold even when the guidance did not load
-
-These are the ones with teeth. They are restated here, deliberately, because a
-session that lost the guidance must not also lose these.
-
-- **Branch protection is real.** Fleet repos are PR-only on their default
-  branch; a direct push is rejected (GH013), even from the repo's own
-  workflows. Never design a bot that pushes to a protected default branch.
-- **Every `uses:` is pinned through `.github/workflows/actions.lock`: an
-  exact tag, locked, checked by a required `gh actions-lock --verify`
-  failing on any pin finding.** A repo not yet migrated keeps the legacy
-  form, a full 40-character commit SHA with no trailing version comment,
-  until its migration PR; never mix the two in one repo. Cross-repo
-  reusable workflows take a full SHA either way. The one carve-out is a ref
-  into this account's own `cms-platform`, which stays on its release tag.
-- **Never commit secrets or `.env` files, and never print personal data to a
-  CI log** — logs, artifacts and git history on a public repo are public.
-- **A successful `git push` does not mean your commit exists.** A refused
-  pre-commit hook still lets the push report success. Verify with
-  `git merge-base --is-ancestor <sha> origin/<branch>` — it is the only check
-  that names both the commit and the ref.
-- **"The watch finished" is not "CI passed."** Read the parsed conclusions;
-  never infer pass/fail from a watch command's exit code.
-- **A GitHub 404 means "not authorized", not "not there."** Never report a
-  repo, PR or branch as gone on a 404 alone.
-- **The fleet spans TWO owners** — `Adam-S-Daniel` and `jodidaniel`. A query
-  scoped to one returns a plausible, complete-shaped, wrong answer.
-- **Anything you name gets its link** — what you hand over, what you are
-  waiting on, and what you cite as already done.
-- **Merge with a merge commit** (`gh pr merge --merge`), except in the three
-  cms-platform-managed repos (`cms-platform`, `adamdaniel.ai`,
-  `jodidaniel.com`), which squash; do not amend published commits or
-  force-push shared branches.
-- **Keep this file under 32 KiB.** Codex truncates project instructions at
-  that byte silently; the sync warns and the drift report flags
-  `codex-truncated`.
+**Your first reply to the user in a session begins**
+`fleet-guidance check: <value>`, copied from the installed guidance's
+`fleet-guidance check value:` line, or `fleet-guidance check: none` when no
+such line is in your context. Never guess one or copy it from a file you
+read; only in replies to the user.
 
 <!-- END MANAGED SECTION -->
 ## Repo-specific additions
