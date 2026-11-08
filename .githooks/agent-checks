@@ -211,6 +211,168 @@ run_local_checks() {
   fi
 }
 
+# ── Workflow expressions: gha-template-injection ─────────────────────────────
+# Untrusted data is escaped for the context it lands in, just before it lands
+# there (agents-md/base.md, Security). In a GitHub Actions `run:` or
+# github-script `script:`, GitHub pastes each ${{ }} value into the script text
+# before the shell or node parses it, so no quoting inside the script can
+# escape it. The encoding that context needs is to pass the value through
+# `env:` and read it as a variable.
+#
+# The check runs zizmor's template-injection audit (https://docs.zizmor.sh),
+# which parses the YAML and knows which expressions an outsider can steer, on
+# every changed workflow (.github/workflows/*.yml|yaml) and local action
+# (action.yml|yaml at the root or under .github/actions/). It refuses findings
+# of Medium or High severity; zizmor's Informational ones (an earlier step's
+# output, mostly) are left to review. It runs --offline and reads the content
+# being checked (the index, or the commit), copied into a temporary directory.
+#
+# zizmor is the pinned version below: one already on PATH at that version, or
+# a copy pip installs once, hash-checked, into
+# ${XDG_CACHE_HOME:-$HOME/.cache}/agent-checks/zizmor/<version>. Bump it by
+# replacing the version and every hash (the wheels' sha256 values on PyPI),
+# after the release is 7 days old. When neither python nor pip can provide it,
+# a local run warns and skips; CI refuses, because CI is the enforcement and
+# skipping there would pass a change nothing checked. AGENT_CHECKS_ZIZMOR names
+# a zizmor to use instead, with no install (the tests set it). Design and the coverage
+# matrix: docs/reference/context-escaping-checks.md in _agent-guidance.
+ZIZMOR_VERSION=1.31.1
+ZIZMOR_SHA256S="9696d3c10919a3a2eb086c102f1bc10717f53ef3700a0d6c55a709c274995476
+4a70ee3c2721122aff04d5bbad5e448d15384f45de2ecb3c9493fe9dac2bc95f
+d9b36840c560a8abe39d9ef3d077239aabf6d572c5c2b629c970592a617dbf6f
+d8a5f86fbf93e65e9d42de9eb4c1855d195c5e9cdeef4f228093ad6711bd8ee4
+58e878eb2dbd2c6183c105e1ac28c14f7dd1eca44a783f1fe2a69647d012c410
+c5ccb17fd820bb1ddc63cc9a715e97c063025487e585f640389a86d9dfc97cda
+385732e55ca152a013b0863213b67be32f94157775354b8ad23cc9c5d70cdc82
+e7fdf82d31cc67eb1d5030bf2372b25ee2a1c3ad05017e18da70ed138c4accd6
+d1d2cdc23e7b11f2d6cbda0df3bee62ee7993a60647650f51c316ccd33365469
+3b35b393e8d437e275c7e399047c9892ccc290f3fc5e6aeb9f65a5d3b2a470e0"
+
+# gha_unavailable <reason> — zizmor could not run: refuse in CI, warn locally.
+gha_unavailable() {
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    problem gha-template-injection "workflow expressions were not checked: $1 Re-run the job; if it keeps failing, fix the runner's python or network rather than the check."
+  else
+    printf 'agent-checks (warning): gha-template-injection skipped: %s CI still runs it.\n' "$1" >&2
+  fi
+}
+
+# gha_python — print a python that has pip, or nothing.
+gha_python() {
+  local py
+  for py in python3 python; do
+    if command -v "$py" > /dev/null 2>&1 && "$py" -m pip --version > /dev/null 2>&1; then
+      printf '%s\n' "$py"
+      return 0
+    fi
+  done
+}
+
+# zizmor_bin <python> — print the path of the pinned zizmor, installing it into
+# the cache first if needed; print nothing when it cannot.
+zizmor_bin() {
+  local py=$1 base dir tmp req h exe
+  if [ -n "${AGENT_CHECKS_ZIZMOR:-}" ]; then
+    [ -x "$AGENT_CHECKS_ZIZMOR" ] && printf '%s\n' "$AGENT_CHECKS_ZIZMOR"
+    return 0
+  fi
+  if command -v zizmor > /dev/null 2>&1 \
+      && [ "$(zizmor --version 2> /dev/null)" = "zizmor $ZIZMOR_VERSION" ]; then
+    command -v zizmor
+    return 0
+  fi
+  base=${XDG_CACHE_HOME:-}
+  [ -n "$base" ] || { [ -n "${HOME:-}" ] && base=$HOME/.cache; } || return 0
+  dir=$base/agent-checks/zizmor/$ZIZMOR_VERSION
+  for exe in bin/zizmor bin/zizmor.exe Scripts/zizmor.exe; do
+    [ -f "$dir/$exe" ] && { printf '%s\n' "$dir/$exe"; return 0; }
+  done
+  [ -n "$py" ] || return 0
+  mkdir -p "$base/agent-checks/zizmor" 2> /dev/null || return 0
+  tmp=$(mktemp -d "$base/agent-checks/zizmor/.install.XXXXXX") || return 0
+  req="zizmor==$ZIZMOR_VERSION"
+  for h in $ZIZMOR_SHA256S; do req="$req --hash=sha256:$h"; done
+  printf '%s\n' "$req" > "$tmp.req"
+  if "$py" -m pip install --quiet --disable-pip-version-check --no-deps \
+       --only-binary :all: --require-hashes --target "$tmp" -r "$tmp.req" > /dev/null 2>&1; then
+    [ -d "$dir" ] || mv "$tmp" "$dir" 2> /dev/null
+  fi
+  rm -rf "$tmp" "$tmp.req"
+  for exe in bin/zizmor bin/zizmor.exe Scripts/zizmor.exe; do
+    [ -f "$dir/$exe" ] && { printf '%s\n' "$dir/$exe"; return 0; }
+  done
+}
+
+# check_gha_injection <list> — run the audit on the workflow and action files
+# named in the NUL-separated path list.
+check_gha_injection() {
+  local list=$1 path work py zz out rc=0 n=0 findings line
+  work=$(mktemp -d) || { gha_unavailable "could not create a temp directory."; return; }
+  while IFS= read -r -d '' path; do
+    case "$path" in
+      .github/workflows/*/*) continue ;;
+      .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+      action.yml|action.yaml|.github/actions/*/action.yml|.github/actions/*/action.yaml) ;;
+      *) continue ;;
+    esac
+    case "$path" in *..*) continue ;; esac
+    mkdir -p "$work/$(dirname -- "$path")" && file_content "$path" > "$work/$path" || continue
+    [ -s "$work/$path" ] || { rm -f "$work/$path"; continue; }
+    n=$((n + 1))
+  done < "$list"
+  if [ "$n" -eq 0 ]; then rm -rf "$work"; return 0; fi
+  note_ran gha-template-injection
+  py=$(gha_python)
+  if [ -z "$py" ]; then
+    rm -rf "$work"
+    gha_unavailable "python with pip is not on PATH, so zizmor $ZIZMOR_VERSION could not be installed or its report read."
+    return
+  fi
+  zz=$(zizmor_bin "$py")
+  if [ -z "$zz" ]; then
+    rm -rf "$work"
+    gha_unavailable "zizmor $ZIZMOR_VERSION could not be installed with pip (offline, or no access to PyPI). It retries on the next run."
+    return
+  fi
+  out=$(cd "$work" && "$zz" --offline --no-progress --no-config --format json \
+          --collect=workflows,actions . 2> /dev/null) || rc=$?
+  rm -rf "$work"
+  # zizmor exits 0 with no findings and 10 to 14 with some; anything else is
+  # its own failure.
+  case "$rc" in
+    0|1[0-4]) ;;
+    *) gha_unavailable "zizmor $ZIZMOR_VERSION stopped with exit $rc."; return ;;
+  esac
+  findings=$("$py" -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    print("!"); sys.exit(0)
+for f in data:
+    if f.get("ident") != "template-injection":
+        continue
+    if f.get("determinations", {}).get("severity") not in ("Medium", "High"):
+        continue
+    locs = f.get("locations", [])
+    locs = [l for l in locs if l.get("symbolic", {}).get("kind") == "Primary"] or locs[:1]
+    for loc in locs[:1]:
+        local = loc.get("symbolic", {}).get("key", {}).get("Local", {})
+        p = local.get("given_path") or local.get("verbatim_path") or "?"
+        row = loc.get("concrete", {}).get("location", {}).get("start_point", {}).get("row", -1) + 1
+        p = p[2:] if p.startswith("./") else p
+        print("%s:%d" % (p.replace("\n", " "), row))
+' <<< "$out" 2> /dev/null) || findings="!"
+  if [ "$findings" = "!" ]; then
+    gha_unavailable "zizmor's report could not be read."
+    return
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    problem gha-template-injection "$line: a \${{ }} expression an outsider can steer (an event field, an input, a branch name) is pasted into a run: or script: before the shell or node parses it, so its value can run as code. Escape it for that context: pass it through the step's env: (NAME: \${{ ... }}) and read \"\$NAME\" in the shell, or process.env.NAME in github-script. Quoting inside the script does not help. Only if the value provably cannot carry code, add '# zizmor: ignore[template-injection]' with the reason on that line. Check with: zizmor --offline <file> (https://docs.zizmor.sh/audits/#template-injection)."
+  done <<< "$findings"
+}
+
 # ── Warning pass: dated phrasing ─────────────────────────────────────────────
 # .githooks/dated-phrasing.js warns about dated history and migration-relative
 # phrasing ("is now", "no longer", "moved to", an ISO date) in the Markdown
@@ -476,6 +638,7 @@ run_checks() {
   list=$(mktemp) || { problem runner-error "could not create a temp file, so nothing was checked."; return; }
   cat > "$list"
   check_paths < "$list"
+  check_gha_injection "$list"
   run_local_checks < "$list"
   run_dated_phrasing "$list"
   rm -f "$list"
