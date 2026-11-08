@@ -378,11 +378,12 @@ A mocked pid became `kill(-1, SIGKILL)`; every user process died
   it inherits yours. `haiku` for search, log extraction, test-checked
   mechanical edits, never security review; `sonnet` for clear-spec
   implementation you review; `opus` for fresh-context correctness review,
-  and security review at `effort: "high"`. Else effort `medium`, never `max`.
-- **Keep judgment and small work**: plan, architecture, root cause, the
-  spec, ~10-call tasks. Fork (your model and context) only under ~100k
-  tokens. A child that skips this file (Explore/Plan, `omitClaudeMd`) needs
-  constraints in its prompt.
+  and security review at `effort: "high"`. Else effort `medium`, never
+  `max`.
+- **Do judgment and ~10-call tasks yourself** (plan, architecture, root
+  cause, the spec); delegate bigger implementation. Fork (your model and
+  context) only under ~100k tokens. A child that skips this file
+  (Explore/Plan, `omitClaudeMd`) needs constraints in its prompt.
 - **Each call re-reads all context**: past ~150k tokens, hand off to a fresh
   session; keep tool output small; poll with scripts, not models.
 - Delegated work is done when a verifier exits 0: name the exact command,
@@ -400,10 +401,10 @@ A mocked pid became `kill(-1, SIGKILL)`; every user process died
   `git status` plus a recorded result; decline a stop hook's "commit and
   push" nudge.
 - **A subagent that has REPORTED can still be holding the tree**: its
-  BACKGROUND CHILDREN are not reaped (a 999/0 tree read 985/14). Check for
-  descendants (`ps -eo pid,etimes,cmd | grep '[y]our-command'`); `md5sum`
-  inputs before and after (differ → not evidence); prefer a per-run output
-  path; kill orphans, and say so.
+  BACKGROUND CHILDREN are not reaped Check for descendants
+  (`ps -eo pid,etimes,cmd | grep '[y]our-command'`); `md5sum` inputs before
+  and after (differ → not evidence); prefer a per-run output path; kill
+  orphans, and say so.
 - **A subagent that goes quiet is not working — check activity, not the
   clock.** Watch its transcript's mtime, with threshold and fallback preset.
 - **A live-test prompt states the credential boundary** — which
