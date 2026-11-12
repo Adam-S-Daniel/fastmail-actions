@@ -22,7 +22,7 @@ BeforeAll {
 
 Describe 'ConvertTo-NormAddr' {
     It 'lowercases a plain address' { ConvertTo-NormAddr 'Foo@Example.COM' | Should -Be 'foo@example.com' }
-    It 'extracts the address from a display-name form' { ConvertTo-NormAddr 'Alice <Alice@Ex.com>' | Should -Be 'alice@ex.com' }
+    It 'extracts the address from a display-name form' { ConvertTo-NormAddr 'Alice <Alice@Example.com>' | Should -Be 'alice@example.com' }
     It 'returns empty for null/empty' {
         ConvertTo-NormAddr $null | Should -Be ''
         ConvertTo-NormAddr '' | Should -Be ''
@@ -32,13 +32,13 @@ Describe 'ConvertTo-NormAddr' {
 Describe 'Get-DeliveredMap' {
     It 'groups senders per delivered-to address and lowercases' {
         $emails = @(
-            (New-Mail 'Bob@Ex.com'   @('Alias1@Me.com')),
-            (New-Mail 'carol@ex.com' @('alias1@me.com')),
-            (New-Mail 'dave@ex.com'  @('Alias2@Me.com'))
+            (New-Mail 'Bob@Example.com'   @('Alias1@Example.net')),
+            (New-Mail 'carol@example.com' @('alias1@example.net')),
+            (New-Mail 'dave@example.com'  @('Alias2@Example.net'))
         )
         $m = Get-DeliveredMap -Emails $emails
-        @($m.Keys | Sort-Object) | Should -Be @('alias1@me.com', 'alias2@me.com')
-        @($m['alias1@me.com']) | Should -Be @('bob@ex.com', 'carol@ex.com')
+        @($m.Keys | Sort-Object) | Should -Be @('alias1@example.net', 'alias2@example.net')
+        @($m['alias1@example.net']) | Should -Be @('bob@example.com', 'carol@example.com')
     }
     It 'ignores messages with no delivered-to' {
         (Get-DeliveredMap -Emails @((New-Mail $null @()))).Keys.Count | Should -Be 0
@@ -52,8 +52,8 @@ Describe 'Get-DeliveredMap' {
 
 Describe 'Get-SentRecipientAddress' {
     It 'collects to/cc/bcc and lowercases' {
-        $sent = @([pscustomobject]@{ to = @(@{ email = 'A@ex.com' }); cc = @(@{ email = 'b@ex.com' }); bcc = @(@{ email = 'c@ex.com' }) })
-        @(Get-SentRecipientAddress -Emails $sent) | Should -Be @('a@ex.com', 'b@ex.com', 'c@ex.com')
+        $sent = @([pscustomobject]@{ to = @(@{ email = 'A@example.com' }); cc = @(@{ email = 'b@example.com' }); bcc = @(@{ email = 'c@example.com' }) })
+        @(Get-SentRecipientAddress -Emails $sent) | Should -Be @('a@example.com', 'b@example.com', 'c@example.com')
     }
     It 'survives an empty scan (a date window with no sent mail)' {
         @(Get-SentRecipientAddress -Emails $null).Count | Should -Be 0
@@ -62,14 +62,14 @@ Describe 'Get-SentRecipientAddress' {
 
 Describe 'Select-KnownCorrespondent' {
     It 'keeps only aliases with at least one known sender' {
-        $delivered = @{ 'alias1@me.com' = @('bob@ex.com', 'news@spam.example'); 'alias2@me.com' = @('news@spam.example') }
-        @(Select-KnownCorrespondent -DeliveredMap $delivered -SentRecipients @('bob@ex.com')) | Should -Be @('alias1@me.com')
+        $delivered = @{ 'alias1@example.net' = @('bob@example.com', 'news@spam.example'); 'alias2@example.net' = @('news@spam.example') }
+        @(Select-KnownCorrespondent -DeliveredMap $delivered -SentRecipients @('bob@example.com')) | Should -Be @('alias1@example.net')
     }
 }
 
 Describe 'Select-NewIdentity' {
     It 'drops existing (case-insensitively) and sorts' {
-        @(Select-NewIdentity -Candidates @('b@me.com', 'a@me.com', 'c@me.com') -ExistingEmails @('C@Me.com')) | Should -Be @('a@me.com', 'b@me.com')
+        @(Select-NewIdentity -Candidates @('b@example.net', 'a@example.net', 'c@example.net') -ExistingEmails @('C@Example.net')) | Should -Be @('a@example.net', 'b@example.net')
     }
 }
 
