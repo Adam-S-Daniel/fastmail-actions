@@ -9,9 +9,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
     '.github/workflows/agent-checks.yml':
         - 'actions/checkout@v7.0.1'
-    '.github/workflows/dependabot-auto-merge.yml':
-        - 'actions/checkout@v7.0.1'
-        - 'dependabot/fetch-metadata@v3.1.0'
+    '.github/workflows/dependabot-auto-merge.yml': []
     '.github/workflows/scheduled-run-health.yml': []
     '.github/workflows/send-self-alert.yml':
         - 'actions/checkout@v7.0.1'
@@ -35,8 +33,3 @@ dependencies:
         commit: 'sha1-f3dac77f0df52b32167b2c46b70e9f1ffa9c050d'
         owner_id: 4205216
         repo_id: 1427158560
-    'dependabot/fetch-metadata@v3.1.0':
-        ref: 'v3.1.0'
-        commit: 'sha1-25dd0e34f4fe68f24cc83900b1fe3fe149efef98'
-        owner_id: 27347476
-        repo_id: 371068214
