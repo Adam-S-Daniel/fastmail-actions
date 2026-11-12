@@ -77,6 +77,16 @@
 # refreshes an older stamp. Replacements are atomic and follow destination
 # symlinks.
 #
+# GIT HOOKS IN HOSTED SESSIONS
+# ----------------------------
+# Besides guidance, a HOSTED session (CLAUDE_CODE_REMOTE=true) gets the fleet's config-based git hooks
+# switched on, because nothing else does: see fleet_git_hooks below and the
+# addendum to docs/decisions/0021-the-sync-delivers-agent-checks-to-every-fleet-repo.md.
+# It is silent, idempotent, never changes this hook's verdict or exit code, and
+# FLEET_GIT_HOOKS=off skips it. A repo whose remote is the hosted local-proxy
+# form (http://...@127.0.0.1:<port>/git/<owner>/<repo>) does not match the
+# installer's github.com conditions and does not get the hooks.
+#
 # CHECK VALUE
 # -----------
 # Every block this hook writes ends with one plain-text line just before the
@@ -727,6 +737,81 @@ PY
     printf '%s\n' "$cloud_result"
     exit "$cloud_status"
 fi
+
+# ── Git hooks in hosted sessions (ADR 0021 addendum) ───────────────────────
+#
+# A hosted (cloud) session runs no fleet git hooks unless something installs
+# them: the cloud setup script runs adam-agentskills'
+# scripts/install-agent-hooks.sh --system only when an attached repo ships that
+# installer, and most projects ship none. So no cloud commit or push was ever
+# checked or logged. This hook is the one thing every hosted session already
+# runs, so it closes the gap: in a HOSTED session only (CLAUDE_CODE_REMOTE=true,
+# the same test as phases 2 and 3 of guidance-load-record.sh), with a git
+# version it can read and that is 2.54+ (config-based hooks), and unless the
+# include file exists AND an includeIf naming it exists in the system or global
+# config (a partial install is repaired), it writes ~/.config/git/agent-hooks.inc and the same includeIf
+# entries install-agent-hooks.sh adds: system scope when the system config is
+# writable, else global. The include text and entries are a byte-for-byte copy
+# of that script's (test_fleet_memory_git_hooks pins the text). The conditions
+# match github.com remotes only, as the installer's do: a remote in the hosted
+# local-proxy form (http://...@127.0.0.1:<port>/git/<owner>/<repo>) does not
+# match, so such a repo does not get the hooks.
+#
+# Fails safe, like that script: nothing points at an absolute script path. Git
+# ignores a missing include file, and a repo without .githooks/agent-checks is a
+# no-op. The step is silent, idempotent, and ANY error skips it: it runs in a
+# subshell with output discarded and cannot change this hook's verdict or exit
+# code. FLEET_GIT_HOOKS=off skips it (a person's opt-out; also what keeps this
+# repo's own tests from touching a real git config).
+fleet_git_hooks() {
+    [ "${CLAUDE_CODE_REMOTE:-}" = true ] || return 0
+    [ "${FLEET_GIT_HOOKS:-}" != off ] || return 0
+    command -v git >/dev/null 2>&1 || return 0
+    local major minor gv
+    gv=$(git version 2>/dev/null | sed -n 's/^git version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+    [ -n "$gv" ] || return 0
+    read -r major minor <<< "$gv"
+    if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 54 ]; }; then return 0; fi
+    [ -n "${HOME:-}" ] || return 0
+
+    # Fully installed (the file and an includeIf naming it) means done. A
+    # partial install (an entry without the file, or the file without entries)
+    # is repaired below; the per-entry check keeps that idempotent.
+    local existing
+    existing=$(git config --system --get-regexp '^includeif\..*\.path$' 2>/dev/null; \
+               git config --global --get-regexp '^includeif\..*\.path$' 2>/dev/null)
+    if [ -f "$HOME/.config/git/agent-hooks.inc" ] && grep -qF -- 'agent-hooks.inc' <<< "$existing"; then return 0; fi
+
+    local scope=--global sys="${GIT_CONFIG_SYSTEM:-/etc/gitconfig}"
+    if [ -w "$sys" ] || { [ ! -e "$sys" ] && [ -w "$(dirname "$sys")" ]; }; then scope=--system; fi
+
+    local inc_file="$HOME/.config/git/agent-hooks.inc" tmp event
+    mkdir -p "$(dirname "$inc_file")" || return 0
+    tmp=$(mktemp "$inc_file.XXXXXX") || return 0
+    {
+        echo "# Written by adam-agentskills scripts/install-agent-hooks.sh (ADR 0020)."
+        echo "# Re-run that script to update; edits here are overwritten."
+        for event in pre-commit pre-push; do
+            printf '[hook "agent-checks-%s"]\n' "$event"
+            printf '\tevent = %s\n' "$event"
+            printf '\tcommand = "f=.githooks/agent-checks; [ -f \\"$f\\" ] || exit 0; exec bash \\"$f\\" %s"\n' "$event"
+        done
+    } > "$tmp" && mv -f "$tmp" "$inc_file" || { rm -f "$tmp"; return 0; }
+
+    # Git expands the ~ itself when it reads the include.
+    # shellcheck disable=SC2088
+    local inc_value='~/.config/git/agent-hooks.inc' owner prefix cond have
+    for owner in Adam-S-Daniel adam-s-daniel jodidaniel; do
+        for prefix in https://github.com/ git@github.com: ssh://git@github.com/; do
+            cond="hasconfig:remote.*.url:${prefix}${owner}/**"
+            have=$(git config --get-all "includeIf.$cond.path" 2>/dev/null) || have=""
+            if ! grep -qxF -- "$inc_value" <<< "$have"; then
+                git config "$scope" --add "includeIf.$cond.path" "$inc_value" >/dev/null 2>&1 || return 0
+            fi
+        done
+    done
+}
+( fleet_git_hooks ) >/dev/null 2>&1 || true
 
 # ── Destinations ───────────────────────────────────────────────────────────
 #
