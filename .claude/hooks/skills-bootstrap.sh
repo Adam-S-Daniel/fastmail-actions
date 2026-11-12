@@ -3183,11 +3183,142 @@ may_replace () {
   [ -n "$recorded" ] && [ "$have" = "$recorded" ]
 }
 
+# --- skills an account plugin already delivers (adam-agentskills#116) -------
+# In a claude.ai cloud session the account's enabled plugins are synced into
+# ~/.claude/plugins/synced/<bucket>/<plugin>/ before SessionStart hooks run (the
+# fleet-guidance hook itself arrives that way). A locked skill that such a
+# plugin also ships then loads twice: once as `<name>` from this hook, once as
+# `<plugin>:<name>` from the plugin, costing its description twice and leaving
+# it unclear which copy a session used. So a skill is NOT installed here when a
+# synced plugin delivers the same <bundle>/<name> from the marketplace named
+# after the lock source's repository. It is reported, and the hook's own prior
+# copy is removed, through the collision arm below.
+#
+# Claude mode only: Codex never loads Claude's synced plugins, and on a durable
+# machine this hook has already exited. The manifest is read as data with
+# `python3 -I`; a name is matched only if the plugin's own skill directory is a
+# real directory holding a SKILL.md file. Anything unreadable matches nothing,
+# so the failure direction is the old behavior: the skill installs (twice).
+PLUGIN_DELIVERED=()
+# Only with CLAUDE_PROJECT_DIR set: without it PROJECT_DIR may be a child repo
+# whose settings Claude Code never loads, so an off switch could be missed.
+if [ "$MODE_CODEX_CLOUD" -eq 0 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
+   && [ -d "$HOME/.claude/plugins/synced" ]; then
+  while IFS= read -r -d '' entry; do
+    PLUGIN_DELIVERED+=("$entry")
+  done < <(SYNCED_ROOT="$HOME/.claude/plugins/synced" \
+             USER_SETTINGS="$HOME/.claude/settings.json" \
+             PROJECT_SETTINGS="$CLAUDE_PROJECT_DIR/.claude/settings.json" \
+             LOCAL_SETTINGS="$CLAUDE_PROJECT_DIR/.claude/settings.local.json" \
+             python3 -I - 2>>"$LOG" <<'SYNCED_PY'
+import json, os, re, stat, sys
+root = os.environ["SYNCED_ROOT"]
+SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def load(path):
+    """JSON from a regular file only: a FIFO or device must not block the hook.
+
+    lstat first, then a non-blocking open checked again with fstat, the way the
+    install-record reader does it. Anything else, or bad JSON, is None.
+    """
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, encoding="utf-8") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return None
+            return json.load(fh)
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+# enabledPlugins, lowest precedence first (user, project, local), the later file
+# winning per key. A plugin some settings file turns off is not loaded, so it
+# delivers nothing and the hook installs the skill as before.
+# A settings file that exists but cannot be read might be the one that turns a
+# plugin off, so it makes the whole answer unknown: deliver nothing, install.
+enabled = {}
+for path in (os.environ["USER_SETTINGS"], os.environ["PROJECT_SETTINGS"],
+             os.environ["LOCAL_SETTINGS"]):
+    if not os.path.lexists(path):
+        continue
+    data = load(path)
+    if not isinstance(data, dict):
+        sys.exit(0)
+    value = data.get("enabledPlugins", {})
+    if not isinstance(value, dict):
+        sys.exit(0)
+    enabled.update(value)
+out = []
+try:
+    buckets = [b for b in sorted(os.listdir(root)) if not b.startswith(".")]
+except OSError:
+    buckets = []
+# One signed-in account, one bucket. Several mean this cannot tell which account
+# the session loads, so it trusts none of them.
+if len(buckets) != 1:
+    buckets = []
+for bucket in buckets:
+    base = os.path.join(root, bucket)
+    if bucket.startswith(".") or os.path.islink(base) or not os.path.isdir(base):
+        continue
+    data = load(os.path.join(base, "manifest.json"))
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, list):
+        continue
+    for plugin in plugins:
+        if not isinstance(plugin, dict):
+            continue
+        name, market = plugin.get("name"), plugin.get("marketplaceName")
+        if not (isinstance(name, str) and isinstance(market, str)
+                and SAFE.match(name) and SAFE.match(market)):
+            continue
+        # The only preference ever observed on a loaded plugin; anything else
+        # is not known to load, so it delivers nothing.
+        if plugin.get("installationPreference") != "available" \
+                or plugin.get("enabled") not in (None, True):
+            continue
+        if enabled.get(f"{name}@synced") is False \
+                or enabled.get(f"{name}@{market}") is False:
+            continue
+        skills = os.path.join(base, name, "skills")
+        if os.path.islink(os.path.join(base, name)) or os.path.islink(skills) \
+                or not os.path.isdir(skills):
+            continue
+        for skill in sorted(os.listdir(skills)):
+            sdir = os.path.join(skills, skill)
+            if SAFE.match(skill) and not os.path.islink(sdir) \
+                    and os.path.isfile(os.path.join(sdir, "SKILL.md")) \
+                    and not os.path.islink(os.path.join(sdir, "SKILL.md")):
+                out.append(f"{market}/{name}/{skill}")
+sys.stdout.write("".join(f"{line}\0" for line in sorted(set(out))))
+SYNCED_PY
+  )
+fi
+
+# delivered_by_plugin <source index> <lock key> — does a synced plugin ship it?
+# The marketplace a source is served as is its repository's name: the last path
+# segment of the source URL, less any `.git`.
+delivered_by_plugin() {
+  [ "${#PLUGIN_DELIVERED[@]}" -gt 0 ] || return 1
+  local url="${SRC_URL[$1]}" market entry
+  url="${url%/}"
+  market="${url##*/}"
+  market="${market%.git}"
+  for entry in "${PLUGIN_DELIVERED[@]}"; do
+    [ "$entry" = "$market/$2" ] && return 0
+  done
+  return 1
+}
+
 total=0
 rows_read=0
 ok=0
 mismatch=()
 collision=()
+via_plugin=()
 duplicate=()
 absent=()
 shadowed=()
@@ -3347,9 +3478,19 @@ while IFS= read -r -d '' key \
       if [ -f "$repo_dir/$PROJECT_SKILLS_DIR/$name/SKILL.md" ]; then owner="$repo_dir"; break; fi
     done
   fi
+  # Repo-owned is asked first so its collision is still reported; only then
+  # does an account plugin that ships the skill take the place of this install.
+  if [ -z "$owner" ] && delivered_by_plugin "$index" "$key"; then
+    owner="plugin"
+  fi
   if [ -n "$owner" ]; then
     rm -rf "${DEST:?}/$name" >>"$LOG" 2>&1
-    if [ "$owner" = "$PROJECT_DIR" ]; then
+    if [ "$owner" = "plugin" ]; then
+      # Delivered, just not by this hook: counted as available, and named in
+      # a note rather than a problem, because nothing is missing.
+      ok=$((ok + 1))
+      via_plugin+=("$key")
+    elif [ "$owner" = "$PROJECT_DIR" ]; then
       collision+=("$name")
     else
       collision+=("$name ($owner)")
@@ -3951,6 +4092,9 @@ if [ "${#RESOLVED[@]}" -gt 0 ]; then
 fi
 if [ "${#narrowed[@]}" -gt 0 ]; then
   notes+=("AGENTSKILLS_BUNDLE narrowed this run to one bundle, leaving ${#narrowed[@]} other-bundle $(plural "${#narrowed[@]}" skill skills) alone ($(join_names "${narrowed[@]}"))")
+fi
+if [ "${#via_plugin[@]}" -gt 0 ]; then
+  notes+=("left ${#via_plugin[@]} $(plural "${#via_plugin[@]}" skill skills) to the account's synced plugins, whose copies already load and are not digest-checked against the lock ($(join_names "${via_plugin[@]}"))")
 fi
 suffix=""
 if [ "${#notes[@]}" -gt 0 ]; then
