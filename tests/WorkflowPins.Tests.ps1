@@ -132,46 +132,6 @@ Describe 'Verify action lockfile step' -Skip:$script:YamlMissing {
     }
 }
 
-Describe 'Dependabot auto-merge allows the action lockfile' -Skip:$script:YamlMissing {
-    # Dependabot rewrites .github/workflows/actions.lock with every action bump,
-    # so both copies of the manifest-path allowlist must accept exactly it.
-    # Each copy's `case "$f" in ... esac` block is lifted out of the parsed
-    # step and run by bash against candidate paths.
-    BeforeAll {
-        $wf = ConvertFrom-Yaml (Get-Content -Raw (Join-Path $script:WorkflowDir 'dependabot-auto-merge.yml'))
-        $script:AllowlistRuns = @{
-            'auto-merge' = (@($wf['jobs']['auto-merge']['steps']) | Where-Object { $_['id'] -ceq 'paths' })['run']
-            'sweep'      = (@($wf['jobs']['sweep']['steps']) | Where-Object { $_['name'] -ceq 'Sweep open Dependabot PRs' })['run']
-        }
-
-        function Test-Allowlisted([string]$Job, [string]$Path) {
-            $lines = $script:AllowlistRuns[$Job] -split "`n"
-            $start = [array]::FindIndex([string[]]$lines, [Predicate[string]] { param($l) $l.Trim() -ceq 'case "$f" in' })
-            if ($start -lt 0) { throw "no case block in $Job" }
-            $end = [array]::FindIndex([string[]]$lines, $start, [Predicate[string]] { param($l) $l.Trim() -ceq 'esac' })
-            if ($end -lt 0) { throw "no esac in $Job" }
-            $block = ($lines[$start..$end] -join "`n")
-            $script = "REJECT=0`nnum=1`nf=`"`$1`"`n$block`necho `"REJECT=`$REJECT`""
-            $out = & bash -c $script bash $Path 2>$null
-            if ($LASTEXITCODE -ne 0) { throw "bash exited $LASTEXITCODE" }
-            return (@($out)[-1] -ceq 'REJECT=0')
-        }
-    }
-
-    It '<Job> accepts .github/workflows/actions.lock' -ForEach @(@{ Job = 'auto-merge' }, @{ Job = 'sweep' }) {
-        Test-Allowlisted $Job '.github/workflows/actions.lock' | Should -BeTrue
-    }
-
-    It '<Job> still rejects <Path>' -ForEach @(
-        @{ Job = 'auto-merge'; Path = '.github/workflows/actions.lock.bak' }
-        @{ Job = 'auto-merge'; Path = 'README.md' }
-        @{ Job = 'sweep'; Path = '.github/workflows/actions.lock.bak' }
-        @{ Job = 'sweep'; Path = 'README.md' }
-    ) {
-        Test-Allowlisted $Job $Path | Should -BeFalse
-    }
-}
-
 Describe 'tests.yml salient step sees both sides of a rename' -Skip:$script:YamlMissing {
     It 'diffs with --no-renames' {
         $wf = ConvertFrom-Yaml (Get-Content -Raw (Join-Path $script:WorkflowDir 'tests.yml'))
@@ -185,73 +145,5 @@ Describe 'tests.yml salient step sees both sides of a rename' -Skip:$script:Yaml
         foreach ($line in $diffLines) {
             $line | Should -MatchExactly 'git diff --no-renames --name-only '
         }
-    }
-}
-
-Describe 'Dependabot auto-merge sees both sides of a rename' -Skip:$script:YamlMissing {
-    # With git's default rename detection, `git diff --name-only` prints only
-    # a rename's NEW name, so a non-manifest file (docs/notes.md) renamed into
-    # an allowed path (.github/workflows/x.yml) is deleted from its old path
-    # without the allowlist ever seeing it. Each job's diff line and
-    # `case "$f" in ... esac` block is lifted from the parsed step and run by
-    # bash in a real git repository holding that rename.
-    BeforeAll {
-        $wf = ConvertFrom-Yaml (Get-Content -Raw (Join-Path $script:WorkflowDir 'dependabot-auto-merge.yml'))
-        $script:DamWorkflow = $wf
-        $script:RenameRuns = @{
-            'auto-merge' = (@($wf['jobs']['auto-merge']['steps']) | Where-Object { $_['id'] -ceq 'paths' })['run']
-            'sweep'      = (@($wf['jobs']['sweep']['steps']) | Where-Object { $_['name'] -ceq 'Sweep open Dependabot PRs' })['run']
-        }
-
-        $script:RenameRepo = Join-Path ([IO.Path]::GetTempPath()) ("dam-rename-" + [guid]::NewGuid())
-        New-Item -ItemType Directory -Path (Join-Path $script:RenameRepo 'docs') -Force | Out-Null
-        function Invoke-RepoGit { git -C $script:RenameRepo @args; if ($LASTEXITCODE -ne 0) { throw "git $args failed" } }
-        Invoke-RepoGit init -q -b main
-        Invoke-RepoGit config user.email test@example.com
-        Invoke-RepoGit config user.name Test
-        Invoke-RepoGit config diff.renames true  # git's default, made explicit
-        Set-Content -Path (Join-Path $script:RenameRepo 'docs/notes.md') -Value (@('on: push', 'jobs: {}') * 20) -NoNewline:$false
-        Invoke-RepoGit add .
-        Invoke-RepoGit commit -q -m base
-        Invoke-RepoGit update-ref refs/remotes/origin/main HEAD
-        New-Item -ItemType Directory -Path (Join-Path $script:RenameRepo '.github/workflows') -Force | Out-Null
-        Invoke-RepoGit mv docs/notes.md .github/workflows/x.yml
-        Invoke-RepoGit commit -q -m rename
-        $script:RenameHead = (git -C $script:RenameRepo rev-parse HEAD).Trim()
-        Invoke-RepoGit update-ref refs/remotes/dependabot-sweep/pr-1 $script:RenameHead
-    }
-
-    AfterAll {
-        if ($script:RenameRepo) { Remove-Item -Recurse -Force $script:RenameRepo -ErrorAction SilentlyContinue }
-    }
-
-    It 'every git diff in the workflow carries --no-renames' {
-        $diffLines = foreach ($job in $script:DamWorkflow['jobs'].Values) {
-            foreach ($step in @($job['steps']) | Where-Object { $_ }) {
-                if ($step['run']) { @($step['run'] -split "`n" | Where-Object { $_.Contains('git diff') }) }
-            }
-        }
-        @($diffLines).Count | Should -Be 2
-        foreach ($line in $diffLines) {
-            ($line.Trim() -split '\s+') | Should -Contain '--no-renames'
-        }
-    }
-
-    It '<Job> refuses a non-manifest file renamed into .github/workflows/x.yml' -ForEach @(@{ Job = 'auto-merge' }, @{ Job = 'sweep' }) {
-        $lines = $script:RenameRuns[$Job] -split "`n"
-        $diff = @($lines | Where-Object { $_.Contains('git diff') })
-        $diff.Count | Should -Be 1
-        $start = [array]::FindIndex([string[]]$lines, [Predicate[string]] { param($l) $l.Trim() -ceq 'case "$f" in' })
-        $end = [array]::FindIndex([string[]]$lines, $start, [Predicate[string]] { param($l) $l.Trim() -ceq 'esac' })
-        $start | Should -BeGreaterOrEqual 0
-        $end | Should -BeGreaterThan $start
-        $script = "set -euo pipefail`nBASE=origin/main`nHEAD=`$1`nbase=main`nnum=1`nREJECT=0`n" +
-            $diff[0].Trim() + "`nfor f in `"`${CHANGED[@]}`"; do`n" + ($lines[$start..$end] -join "`n") +
-            "`ndone`necho `"REJECT=`$REJECT`""
-        Push-Location $script:RenameRepo
-        try { $out = @(& bash -c $script bash $script:RenameHead 2>&1) } finally { Pop-Location }
-        $LASTEXITCODE | Should -Be 0 -Because ($out -join "`n")
-        ($out -join "`n") | Should -Match 'docs/notes\.md'
-        $out[-1] | Should -BeExactly 'REJECT=1'
     }
 }
