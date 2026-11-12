@@ -42,6 +42,9 @@
 # annotations in CI, and never changes the exit status. To keep a flagged line
 # that is right as written, add it to .agent-checks/dated-phrasing-allowlist.txt.
 #
+# local-identity refuses a changed file that holds this machine's own account
+# name in a home path, or its hostname; see "Local identity" below.
+#
 # Run log. Each pre-commit and pre-push run (never ci or tree) appends one JSON
 # line to $AGENT_CHECKS_LOG, by default
 # ${XDG_STATE_HOME:-$HOME/.local/state}/agent-checks/runs.jsonl, so a dashboard
@@ -134,6 +137,112 @@ check_lessons() {
 # that leaves the root AGENTS.md longer.
 CODEX_PROJECT_DOC_MAX_BYTES=32768
 
+# ── Local identity: local-identity ───────────────────────────────────────────
+# A public repo ships whatever is committed to everyone who clones it, and an
+# agent often pastes a path or a prompt from its own machine into a fixture or
+# a doc. The check refuses a changed file whose content holds THIS machine's
+# account name inside a home-directory path (/home/<user>, /Users/<user>, the
+# same with one or two backslashes, or Claude's project slug -home-<user>-) or
+# its hostname as a whole word (as reported, all upper or all lower case). A
+# bare occurrence of the account name is not flagged: it can be a piece of an
+# ordinary word.
+#
+# The identity comes from the machine the runner is on, so no name is written
+# in this file: AGENT_CHECKS_LOCAL_USER or `id -un`; AGENT_CHECKS_LOCAL_HOST or
+# `hostname -s` (else `uname -n` without its domain). The two variables, set
+# even to an empty value, replace the lookup (the tests set them). A name that
+# is empty, unavailable or generic is not checked: a user shorter than 3
+# characters or one of the names in local_generic_users; a host shorter than 4
+# characters, localhost, or 12 or more lowercase hex digits (a container id).
+# Under GitHub Actions (GITHUB_ACTIONS=true) the check never runs: a runner has
+# no personal identity, and a refusal must not print one to a public log. The
+# refusal names the path and line numbers only, never the identity; the run log
+# gets the id and nothing else. Both names are matched as literal text.
+local_generic_users=" root runner user ubuntu agent codex node vscode dev admin administrator codespace gitpod git nobody "
+local_user=""
+local_host=""
+local_user_re=""
+local_host_re=""
+
+# local_lower <text> — the text in lowercase.
+local_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# local_regex_escape <text> — the text with ERE metacharacters backslashed.
+local_regex_escape() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
+
+# local_identity_init — set local_user and local_host to the names worth
+# checking (empty for one that is not), build the pattern for each once, and
+# record the check as run when at least one is.
+local_identity_init() {
+  local u h lower
+  local_user=""
+  local_host=""
+  local_user_re=""
+  local_host_re=""
+  [ "${GITHUB_ACTIONS:-}" = true ] && return 0
+  if [ -n "${AGENT_CHECKS_LOCAL_USER+x}" ]; then
+    u=$AGENT_CHECKS_LOCAL_USER
+  else
+    u=$(id -un 2> /dev/null) || u=""
+  fi
+  if [ -n "${AGENT_CHECKS_LOCAL_HOST+x}" ]; then
+    h=$AGENT_CHECKS_LOCAL_HOST
+  else
+    h=$(hostname -s 2> /dev/null) || h=""
+    if [ -z "$h" ]; then
+      h=$(uname -n 2> /dev/null) || h=""
+      h=${h%%.*}
+    fi
+  fi
+  case "$u" in *$'\n'*) u="" ;; esac
+  case "$h" in *$'\n'*) h="" ;; esac
+  lower=$(local_lower "$u")
+  if [ "${#u}" -ge 3 ]; then
+    case "$local_generic_users" in *" $lower "*) ;; *) local_user=$u ;; esac
+  fi
+  lower=$(local_lower "$h")
+  if [ "${#h}" -ge 4 ] && [ "$lower" != localhost ]; then
+    case "$lower" in
+      *[!0-9a-f]*) local_host=$h ;;
+      *) [ "${#h}" -ge 12 ] || local_host=$h ;;
+    esac
+  fi
+  if [ -n "$local_user" ]; then
+    u=$(local_regex_escape "$local_user")
+    local_user_re="(/home/|/Users/|\\\\{1,2}(home|Users)\\\\{1,2})$u([^A-Za-z0-9_-]|\$)|-home-$u-"
+  fi
+  if [ -n "$local_host" ]; then
+    for h in "$local_host" "$(printf '%s' "$local_host" | tr '[:lower:]' '[:upper:]')" "$(local_lower "$local_host")"; do
+      local_host_re="$local_host_re${local_host_re:+|}$(local_regex_escape "$h")"
+    done
+    local_host_re="(^|[^A-Za-z0-9_-])($local_host_re)([^A-Za-z0-9_-]|\$)"
+  fi
+  if [ -n "$local_user$local_host" ]; then note_ran local-identity; fi
+}
+
+# check_local_identity <path> — refuse the file when its content (text only:
+# grep -I skips binary) holds the account name in a home path or the hostname.
+check_local_identity() {
+  local path=$1 hits line what=""
+  [ -n "$local_user_re$local_host_re" ] || return 0
+  if [ -n "$local_user_re" ]; then
+    hits=$(file_content "$path" | LC_ALL=C grep -n -I -E -e "$local_user_re")
+    if [ -n "$hits" ]; then
+      line=${hits%%:*}
+      what="line $line holds this machine's account name in a home-directory path"
+    fi
+  fi
+  if [ -n "$local_host_re" ]; then
+    hits=$(file_content "$path" | LC_ALL=C grep -n -I -E -e "$local_host_re")
+    if [ -n "$hits" ]; then
+      line=${hits%%:*}
+      what="$what${what:+; }line $line holds this machine's hostname"
+    fi
+  fi
+  [ -n "$what" ] || return 0
+  problem local-identity "$path: $what. A public repo ships it to everyone who clones it. Replace it with a placeholder (/home/example, example-user) or name the machine by its role (the dev box, the build host). The identity is not printed here on purpose; the line numbers say where to look. If the name is there as data on purpose (a scrub rule that must spell it), commit once with AGENT_CHECKS_LOCAL_USER= or AGENT_CHECKS_LOCAL_HOST= set to empty."
+}
+
 # Reads NUL-separated paths on stdin and refuses the ones that must never be
 # committed, or the root AGENTS.md when it is too long for Codex.
 check_paths() {
@@ -172,6 +281,7 @@ check_paths() {
       fi
     fi
     check_lessons "$path" < /dev/null
+    check_local_identity "$path" < /dev/null
   done
 }
 
@@ -635,6 +745,7 @@ run_checks() {
   note_ran secret-file
   note_ran skill-shell
   for id in $lesson_checks; do note_ran "$id"; done
+  local_identity_init
   list=$(mktemp) || { problem runner-error "could not create a temp file, so nothing was checked."; return; }
   cat > "$list"
   check_paths < "$list"
