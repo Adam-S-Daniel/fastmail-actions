@@ -38,7 +38,7 @@
 #    "state":"full","repos":2,"guidance_version":"0123abcd",
 #    "check_expected":true,"check_reported":"match",
 #    "registry_sha":null,"sources":[{"registry":"<owner>/<repo>","ref":"<40 hex>"}],
-#    "sources_dropped":0,"uploaded":null}
+#    "sources_dropped":0,"listing":"full","uploaded":null}
 # `session` is a sha256 prefix of the session id, never the id. `surface` and
 # `cli` are the transcript's own `entrypoint` and `version`, or null when the
 # value is not one the private reader accepts (see SURFACE_RE and CLI_RE).
@@ -57,7 +57,12 @@
 # the cap. Both are null when the install record is missing, not a regular
 # file, over 1 MiB, unreadable, or has no `sources` list (installs before
 # _agent-guidance#398 had none). `uploaded` is true or false when an upload was
-# tried, null when it was not. Apart from registry owner/repo names, this
+# tried, null when it was not. `listing` is optional: "full" or "truncated"
+# when the transcript holds the session's first skill listing (an `attachment`
+# of type skill_listing with isInitial true), "truncated" when a
+# skill is listed by name alone, and absent (the key is omitted) when no such
+# listing is found. Any skill, bare or namespaced, listed by name alone
+# reads "truncated". Never "full" without that proof. Apart from registry owner/repo names, this
 # record holds no paths, names, titles or file content. (Phase 2's lines, below,
 # carry skill names, tool-use ids and digests, and go to the private store or
 # the private bucket only.)
@@ -416,10 +421,37 @@ def first_report(message):
     return None
 
 
+_LISTED = re.compile(r"^- (?P<name>[^\s:]+(?::[^\s:]+)?)(?P<rest>.*)$")
+
+
+def listing_state(entry):
+    """"full" or "truncated" for the entry holding the session's first
+    (isInitial) skill listing; None for any other entry. Claude Code cuts the
+    listing to a character budget and lists the last skills by name alone; a
+    plugin skill always has a description, so a namespaced name with none is
+    that cut. Stricter than skills-evals' model_usage_census.listing_state: a
+    BARE name with none counts as a cut too, because the registry bundles the
+    skills-bootstrap hook installs in cloud sessions are listed by bare name,
+    and a false "full" could let a used skill be removed."""
+    att = entry.get("attachment")
+    if not isinstance(att, dict) or att.get("type") != "skill_listing" \
+            or att.get("isInitial") is not True:
+        return None
+    content = att.get("content")
+    if not isinstance(content, str):
+        return None
+    for line in content.split("\n"):
+        found = _LISTED.match(line)
+        if found and not found.group("rest").lstrip(":").strip():
+            return "truncated"
+    return "full"
+
+
 def read_transcript(path):
     """(instruction files, entrypoint, cli version, assistant responses, first
-    check report: 8 hex, "none" or None)."""
-    files, surface, cli, assistant, report = None, None, None, set(), None
+    check report: 8 hex, "none" or None, listing: "full", "truncated" or None
+    when no initial skill listing is in the transcript)."""
+    files, surface, cli, assistant, report, listing = None, None, None, set(), None, None
     with open(path, encoding="utf-8", errors="replace") as handle:
         for raw in handle:
             try:
@@ -441,12 +473,14 @@ def read_transcript(path):
                     report = first_report(message)
             elif kind == "attachment":
                 att = entry.get("attachment")
+                if listing is None:
+                    listing = listing_state(entry)
                 if isinstance(att, dict) and att.get("type") == "instructions":
                     listed = att.get("files")
                     files = files or []
                     if isinstance(listed, list):
                         files += [f for f in listed if isinstance(f, dict)]
-    return files, surface, cli, len(assistant), report
+    return files, surface, cli, len(assistant), report, listing
 
 
 def classify(files):
@@ -1806,7 +1840,7 @@ def phase1(states, digest, transcript, cloud):
     if os.path.exists(flag):
         return
     try:
-        files, surface, cli, responses, report = read_transcript(transcript)
+        files, surface, cli, responses, report, listing = read_transcript(transcript)
     except OSError:
         return
     if files is None:
@@ -1842,6 +1876,8 @@ def phase1(states, digest, transcript, cloud):
         "registry_sha": None,
     }
     record["sources"], record["sources_dropped"] = registry_sources()
+    if listing is not None:
+        record["listing"] = listing
     line = json.dumps(record, separators=(",", ":"))
     uploaded = None
     if remote:
