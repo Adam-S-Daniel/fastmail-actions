@@ -220,6 +220,12 @@ local_identity_init() {
   if [ -n "$local_user$local_host" ]; then note_ran local-identity; fi
 }
 
+# The UTF-8 bytes of the Unicode spaces JavaScript's \s adds to ASCII ones:
+# U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF.
+# printf builds the bytes at run time so this file stays ASCII. The skill-shell
+# check below matches them as bytes under LC_ALL=C.
+SKILL_SHELL_UNICODE_SPACE=$(printf '\302\240|\341\232\200|\342\200[\200-\212\250\251\257]|\342\201\237|\343\200\200|\357\273\277')
+
 # check_local_identity <path> — refuse the file when its content (text only:
 # grep -I skips binary) holds the account name in a home path or the hostname.
 check_local_identity() {
@@ -266,9 +272,13 @@ check_paths() {
     esac
     # A here-string, not a pipe: grep -q exits at the first match, which can
     # kill a writer still filling the pipe.
+    # Claude Code matches /(?<=^|\s)!`([^`]+)`/gm and an unanchored
+    # /```!\s*\n?([\s\S]*?)\n?```/g, and JavaScript's \s holds the Unicode
+    # spaces below. The match runs on bytes (LC_ALL=C), so the locale cannot
+    # hide a no-break space, and the fence opener may sit anywhere in a line.
     if $is_skill_file \
-        && grep -Eq '(^|[[:space:]])!`|^[[:space:]]*```!' <<<"$(file_content "$path")"; then
-      problem skill-shell "$path: a line starts a shell command that Claude Code runs when the skill loads (an exclamation mark then a backtick, at line start or after a space, or a code fence opened with a backtick fence and an exclamation mark). It runs before the model reads the skill, so no review and no prompt-injection defense sees it. Have the skill tell the agent to run the command, or move the command into a script the skill calls."
+        && LC_ALL=C grep -Eq "(^|[[:space:]]|$SKILL_SHELL_UNICODE_SPACE)!\`|\`\`\`!" <<<"$(file_content "$path")"; then
+      problem skill-shell "$path: a line starts a shell command that Claude Code runs when the skill loads (an exclamation mark then a backtick, at line start or after any space including a Unicode one, or a backtick fence followed by an exclamation mark anywhere in a line). It runs before the model reads the skill, so no review and no prompt-injection defense sees it. Have the skill tell the agent to run the command, or move the command into a script the skill calls."
     fi
     # The root AGENTS.md, measured in bytes in the content being checked. It
     # is counted in the run log only when the change touched that file.
