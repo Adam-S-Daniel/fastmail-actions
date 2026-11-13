@@ -86,6 +86,9 @@ jobs:
       - name: Sweep open Dependabot PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No checkout, so gh has no repository context of its own and would
+          # run git to find one (and fail: not a git repository).
+          GH_REPO: ${{ github.repository }}
           SELF_WORKFLOW: ${{ github.workflow }}
         run: |
           set -euo pipefail
