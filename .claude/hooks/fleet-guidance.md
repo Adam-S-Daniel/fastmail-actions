@@ -135,6 +135,10 @@ Under https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/reference/
 - `network-allowlists.md`: editing either egress allowlist
 - `code-scanning-alerts.md`: reading alerts when the token gets 403
 
+## Eval rules
+
+Link skills-evals' `docs/rules.md`; never restate one.
+
 ## Automation vs branch protection
 
 Fleet repos are PR-only on the default branch via ruleset, managed in
