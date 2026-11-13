@@ -59,10 +59,14 @@
 # _agent-guidance#398 had none). `uploaded` is true or false when an upload was
 # tried, null when it was not. `listing` is optional: "full" or "truncated"
 # when the transcript holds the session's first skill listing (an `attachment`
-# of type skill_listing with isInitial true), "truncated" when a
-# skill is listed by name alone, and absent (the key is omitted) when no such
-# listing is found. Any skill, bare or namespaced, listed by name alone
-# reads "truncated". Never "full" without that proof. Apart from registry owner/repo names, this
+# of type skill_listing with isInitial true), and absent (the key is omitted)
+# when no such listing is found. When the install record lists the skills it
+# installed from Adam-S-Daniel/adam-agentskills, only those are judged: "full"
+# when every one is listed with a description, "truncated" when any is listed
+# by name alone or missing (a cut that reaches only account or plugin skills
+# leaves them fully listed). Without that list, any skill, bare or
+# namespaced, listed by name alone reads "truncated". Never "full" without
+# that proof. Apart from registry owner/repo names, this
 # record holds no paths, names, titles or file content. (Phase 2's lines, below,
 # carry skill names, tool-use ids and digests, and go to the private store or
 # the private bucket only.)
@@ -359,6 +363,10 @@ SOURCE_REGISTRY = re.compile(
 SOURCE_REF = re.compile(r"[0-9a-f]{40}")
 MAX_SOURCES = 16
 MAX_INSTALL_RECORD = 1 << 20
+# The registry whose skills a cloud `listing` judges, and the bare skill name
+# an install record entry must carry to count.
+LISTING_REGISTRY = "Adam-S-Daniel/adam-agentskills"
+SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 START = time.monotonic()
 
 
@@ -500,15 +508,22 @@ def first_report(message):
 _LISTED = re.compile(r"^- (?P<name>[^\s:]+(?::[^\s:]+)?)(?P<rest>.*)$")
 
 
-def listing_state(entry):
+def listing_state(entry, installed=None):
     """"full" or "truncated" for the entry holding the session's first
     (isInitial) skill listing; None for any other entry. Claude Code cuts the
-    listing to a character budget and lists the last skills by name alone; a
-    plugin skill always has a description, so a namespaced name with none is
-    that cut. Stricter than skills-evals' model_usage_census.listing_state: a
-    BARE name with none counts as a cut too, because the registry bundles the
-    skills-bootstrap hook installs in cloud sessions are listed by bare name,
-    and a false "full" could let a used skill be removed."""
+    listing to a character budget and lists the last skills by name alone.
+
+    With `installed` (the registry skill names the install record lists), only
+    those skills are judged: "full" when every one is listed with a
+    description, "truncated" when any is listed by name alone or not at all.
+    Claude Code cuts from the end of the listing, where account and plugin
+    skills sit, so a cut that reaches none of the registry's skills leaves
+    them fully listed (skills-evals' removal exposure counts these sessions).
+
+    Without `installed`, any line listed by name alone, bare or namespaced,
+    reads "truncated". Stricter than skills-evals'
+    model_usage_census.listing_state, which judges only namespaced names: a
+    false "full" could let a used skill be removed."""
     att = entry.get("attachment")
     if not isinstance(att, dict) or att.get("type") != "skill_listing" \
             or att.get("isInitial") is not True:
@@ -516,14 +531,21 @@ def listing_state(entry):
     content = att.get("content")
     if not isinstance(content, str):
         return None
+    described, bare = set(), set()
     for line in content.split("\n"):
         found = _LISTED.match(line)
-        if found and not found.group("rest").lstrip(":").strip():
-            return "truncated"
-    return "full"
+        if not found:
+            continue
+        if found.group("rest").lstrip(":").strip():
+            described.add(found.group("name"))
+        else:
+            bare.add(found.group("name"))
+    if installed:
+        return "full" if set(installed) <= described else "truncated"
+    return "truncated" if bare else "full"
 
 
-def read_transcript(path):
+def read_transcript(path, installed=None):
     """(instruction files, entrypoint, cli version, assistant responses, first
     check report: 8 hex, "none" or None, listing: "full", "truncated" or None
     when no initial skill listing is in the transcript)."""
@@ -550,7 +572,7 @@ def read_transcript(path):
             elif kind == "attachment":
                 att = entry.get("attachment")
                 if listing is None:
-                    listing = listing_state(entry)
+                    listing = listing_state(entry, installed)
                 if isinstance(att, dict) and att.get("type") == "instructions":
                     listed = att.get("files")
                     files = files or []
@@ -616,25 +638,58 @@ def guidance_version():
     return None
 
 
-def registry_sources():
-    """(sources, dropped) from skills-bootstrap.sh's install record, or
-    (None, None) when it has no usable `sources` list. Never raises."""
+def install_record():
+    """skills-bootstrap.sh's install record, parsed, or None when it is
+    missing, not a regular file, over 1 MiB, unreadable or not JSON. Never
+    raises."""
     try:
         home = os.environ.get("HOME") or os.path.expanduser("~")
         path = os.path.join(home, ".claude", "skills", ".skills-bootstrap-installed.json")
         info = os.lstat(path)
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_INSTALL_RECORD:
-            return None, None
+            return None
         # O_NOFOLLOW and O_NONBLOCK: the path may have been swapped for a link
         # or a FIFO since the lstat; fstat confirms what was opened.
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                return None, None
+                return None
             raw = handle.read(MAX_INSTALL_RECORD + 1)
         if len(raw) > MAX_INSTALL_RECORD:
-            return None, None
-        doc = json.loads(raw.decode("utf-8"))
+            return None
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def installed_skills():
+    """The names of the skills the install record says skills-bootstrap.sh
+    installed from Adam-S-Daniel/adam-agentskills, or None when the record or
+    its `installed` list is missing or holds no such skill. Never raises."""
+    try:
+        doc = install_record()
+        listed = doc.get("installed") if isinstance(doc, dict) else None
+        if not isinstance(listed, list):
+            return None
+        names = set()
+        for item in listed:
+            if not isinstance(item, dict):
+                continue
+            registry, name = item.get("registry"), item.get("name")
+            found = SOURCE_REGISTRY.fullmatch(registry) if isinstance(registry, str) else None
+            if (found and "%s/%s" % (found.group(1), found.group(2)) == LISTING_REGISTRY
+                    and isinstance(name, str) and SKILL_NAME_RE.fullmatch(name)):
+                names.add(name)
+        return names or None
+    except Exception:
+        return None
+
+
+def registry_sources():
+    """(sources, dropped) from skills-bootstrap.sh's install record, or
+    (None, None) when it has no usable `sources` list. Never raises."""
+    try:
+        doc = install_record()
         listed = doc.get("sources") if isinstance(doc, dict) else None
         if not isinstance(listed, list):
             return None, None
@@ -2089,7 +2144,7 @@ def phase1(states, digest, transcript, cloud):
     if os.path.exists(flag):
         return
     try:
-        files, surface, cli, responses, report, listing = read_transcript(transcript)
+        files, surface, cli, responses, report, listing = read_transcript(transcript, installed_skills())
     except OSError:
         return
     if files is None:
