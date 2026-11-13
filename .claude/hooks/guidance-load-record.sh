@@ -300,6 +300,10 @@
 # hook only. GUIDANCE_RECORD_TEST_SCALE, read only when GUIDANCE_RECORD_TEST=1,
 # shrinks every time budget (the 15 s total, the 10 s call cap, phase 2's
 # 4/1.5/3/6 s caps and the backoff) by a factor in (0, 1]; it never grows one.
+# GUIDANCE_RECORD_TEST_TICK (seconds, > 0) swaps the monotonic clock for a counter
+# that advances that much per reading, so a deadline is reached after a fixed
+# number of checks whatever the machine's speed; GUIDANCE_RECORD_TEST_ELAPSED_FILE
+# names a file that receives the hook's own run time, in seconds, when it ends.
 
 exec 1>/dev/null 2>/dev/null
 
@@ -363,11 +367,31 @@ SOURCE_REGISTRY = re.compile(
 SOURCE_REF = re.compile(r"[0-9a-f]{40}")
 MAX_SOURCES = 16
 MAX_INSTALL_RECORD = 1 << 20
+_ticks = [0]
+
+
+def monotonic():
+    """time.monotonic(), or under the test marker with GUIDANCE_RECORD_TEST_TICK
+    set, a counter that advances that many seconds per call: a deadline then
+    arrives after a fixed number of checks, not after real seconds a loaded
+    machine can stretch."""
+    tick = 0.0
+    if os.environ.get("GUIDANCE_RECORD_TEST") == "1":
+        try:
+            tick = float(os.environ.get("GUIDANCE_RECORD_TEST_TICK") or "0")
+        except ValueError:
+            tick = 0.0
+    if tick > 0:
+        _ticks[0] += 1
+        return _ticks[0] * tick
+    return time.monotonic()
+
+
 # The registry whose skills a cloud `listing` judges, and the bare skill name
 # an install record entry must carry to count.
 LISTING_REGISTRY = "Adam-S-Daniel/adam-agentskills"
 SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-START = time.monotonic()
+START = monotonic()
 
 
 def seam(name):
@@ -713,15 +737,15 @@ def registry_sources():
 # ── subprocesses ────────────────────────────────────────────────────────────
 
 def remaining():
-    return BUDGET - (time.monotonic() - START)
+    return BUDGET - (monotonic() - START)
 
 
 def cap_for(deadline):
     """Seconds one call may take: at most 10, inside the overall budget and
-    `deadline` (a time.monotonic() value, or None)."""
+    `deadline` (a monotonic() value, or None)."""
     cap = min(CALL_CAP, remaining())
     if deadline is not None:
-        cap = min(cap, deadline - time.monotonic())
+        cap = min(cap, deadline - monotonic())
     return cap
 
 
@@ -1251,7 +1275,7 @@ def sink_upload(cfg, line, cloud, snap, held=None):
     outcome, sent, uploaded = "fail", set(), False
     try:
         if line is None:
-            deadline = time.monotonic() + min(NET_BUDGET, remaining() - MIN_CALL / 2)
+            deadline = monotonic() + min(NET_BUDGET, remaining() - MIN_CALL / 2)
         else:
             deadline = None
         if not sink_usable(cfg):
@@ -1310,7 +1334,7 @@ def upload(line, when, cloud=None):
     try:
         base = (seam("GUIDANCE_RECORD_API") or "https://api.github.com").rstrip("/")
         if line is None:
-            deadline = time.monotonic() + min(NET_BUDGET, remaining() - MIN_CALL / 2)
+            deadline = monotonic() + min(NET_BUDGET, remaining() - MIN_CALL / 2)
         else:
             deadline = None
         if shutil.which("curl") is None:
@@ -1461,7 +1485,7 @@ def scan(path, mark, session, parse_end):
     `sessionId` is this session's count; the cutoff never passes a use that
     is not settled yet (no base-directory message, no tool result, no later
     assistant turn)."""
-    if time.monotonic() >= parse_end:
+    if monotonic() >= parse_end:
         return None
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -1477,7 +1501,7 @@ def scan(path, mark, session, parse_end):
             off = 0                      # a new or truncated file starts over
         os.lseek(fd, off, os.SEEK_SET)
         chunks, got = [], 0
-        while got < MAX_SCAN and time.monotonic() < parse_end:
+        while got < MAX_SCAN and monotonic() < parse_end:
             chunk = os.read(fd, min(1 << 20, MAX_SCAN - got))
             if not chunk:
                 break
@@ -1496,7 +1520,7 @@ def scan(path, mark, session, parse_end):
     uses, by_call, by_parent, results = [], {}, {}, set()
     last_assistant, pos, idx, limit = -1, 0, 0, end + 1
     while pos <= end:
-        if time.monotonic() >= parse_end:
+        if monotonic() >= parse_end:
             limit = pos
             break
         nl = data.index(b"\n", pos)
@@ -1576,7 +1600,7 @@ def path_shape(real):
 
 
 def check_budget(hash_end):
-    if time.monotonic() >= hash_end:
+    if monotonic() >= hash_end:
         raise BudgetOut()
 
 
@@ -1946,7 +1970,7 @@ class Cloud:
     def collect(self):
         """Record every newly settled use into the pending file. Never holds
         the lock across the network; a busy lock skips this Stop."""
-        t0 = time.monotonic()
+        t0 = monotonic()
         collect_end = min(t0 + COLLECT_BUDGET, START + BUDGET - MIN_CALL)
         parse_end = min(t0 + PARSE_BUDGET, collect_end)
         if not self.prepare():
@@ -1972,7 +1996,7 @@ class Cloud:
                         cutoff, stop = use["start"], True
                         break
                     if hash_end is None:
-                        hash_end = min(time.monotonic() + HASH_BUDGET, collect_end)
+                        hash_end = min(monotonic() + HASH_BUDGET, collect_end)
                     try:
                         line = self.event(use, hash_end)
                     except BudgetOut:
@@ -2012,9 +2036,9 @@ class Cloud:
         if sink_config() is not None and not s3_hooks_enabled():
             return                       # nowhere to send them yet: do not accumulate
         path = hook_log_path()
-        if path is None or START + BUDGET - time.monotonic() < 2 * MIN_CALL:
+        if path is None or START + BUDGET - monotonic() < 2 * MIN_CALL:
             return
-        end = min(time.monotonic() + HOOKS_BUDGET, START + BUDGET - MIN_CALL)
+        end = min(monotonic() + HOOKS_BUDGET, START + BUDGET - MIN_CALL)
         if not self.prepare():
             return
         fd = self.lock()
@@ -2030,7 +2054,7 @@ class Cloud:
             seen, new, hseen = set(st.get("hseen", [])), [], list(st.get("hseen", []))
             n, overflow = st.get("hn", 0), st.get("hoverflow", 0)
             for raw in lines:
-                if len(new) >= HOOKS_PER_STOP or time.monotonic() > end:
+                if len(new) >= HOOKS_PER_STOP or monotonic() > end:
                     break
                 off += len(raw) + 1
                 if raw.endswith(b"\r"):
@@ -2236,5 +2260,14 @@ if __name__ == "__main__":
         main()
     except Exception:
         pass
+    # Test seam: the hook's own run time, so a test can bound it without
+    # counting the interpreter start-up a loaded machine slows.
+    elapsed_file = seam("GUIDANCE_RECORD_TEST_ELAPSED_FILE")
+    if elapsed_file:
+        try:
+            with open(elapsed_file, "w", encoding="ascii") as handle:
+                handle.write("%.6f" % (monotonic() - START))
+        except OSError:
+            pass
 PY
 exit 0
