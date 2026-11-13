@@ -852,7 +852,10 @@ fleet_git_hooks() {
     for owner in Adam-S-Daniel adam-s-daniel jodidaniel; do
         for prefix in https://github.com/ git@github.com: ssh://git@github.com/; do
             cond="hasconfig:remote.*.url:${prefix}${owner}/**"
-            have=$(git config --get-all "includeIf.$cond.path" 2>/dev/null) || have=""
+            # Same scope as the write below: an unscoped read also sees the
+            # session repo's own .git/config, and a local entry there would
+            # suppress the system/global one.
+            have=$(git config "$scope" --get-all "includeIf.$cond.path" 2>/dev/null) || have=""
             if ! grep -qxF -- "$inc_value" <<< "$have"; then
                 git config "$scope" --add "includeIf.$cond.path" "$inc_value" >/dev/null 2>&1 || return 0
             fi
