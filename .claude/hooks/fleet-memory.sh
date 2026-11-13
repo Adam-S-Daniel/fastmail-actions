@@ -144,7 +144,55 @@
 # until the day it doesn't. A failure at ONE destination never stops the other:
 # the run finishes every destination it can and then reports DEGRADED naming
 # the one that failed.
+#
+# OWNER GATE
+# ----------
+# The fleet's repos are public, and this hook is registered in each one's
+# .claude/settings.json, so it runs for anyone who clones one and trusts the
+# workspace. On a DURABLE machine it therefore writes nothing unless the run
+# carries an explicit signal that the guidance is wanted there; see
+# docs/decisions/0042-the-guidance-hooks-are-opt-in-on-a-durable-machine.md.
+# Delivery proceeds when ANY of these holds:
+#   --codex-cloud                    the explicit Codex Cloud setup mode;
+#   FLEET_GUIDANCE_SKIP on           an explicit request to REMOVE the block;
+#   CLAUDE_CODE_REMOTE=true, or a nonempty CLAUDE_CODE_REMOTE_SESSION_ID
+#                                    a hosted (ephemeral) Claude Code session;
+#   FLEET_GUIDANCE_OWNER on          a user-level caller (the plugin) or the
+#                                    owner's environment says so;
+#   a nonempty FLEET_GUIDANCE_PAYLOAD  a caller chose the payload itself (the
+#                                    plugin's fetched copy, the eval harness);
+#   the marker file ${XDG_CONFIG_HOME:-$HOME/.config}/fleet-guidance/owner
+#                                    (XDG_CONFIG_HOME only when absolute),
+#                                    written once per machine by
+#                                    adam-agentskills' `setup.sh --owner-machine`.
+# "On" follows FLEET_GUIDANCE_SKIP's spelling: empty, 0, false, no and off
+# (any case) are off. Otherwise the run is a no-op: nothing is read or
+# written under HOME, nothing is printed, no receipt is written, and it
+# exits 0 — whatever the arguments. A block an earlier, ungated run installed
+# is left exactly as it is; FLEET_GUIDANCE_SKIP=1 removes it.
 set -uo pipefail
+
+fleet_flag_on() {
+    case "${1:-}" in
+        ""|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) return 1 ;;
+    esac
+    return 0
+}
+fleet_delivery_wanted() {
+    local config_home="${XDG_CONFIG_HOME:-}"
+    if [ "$#" -eq 1 ] && [ "$1" = --codex-cloud ]; then return 0; fi
+    fleet_flag_on "${FLEET_GUIDANCE_SKIP:-}" && return 0
+    [ "${CLAUDE_CODE_REMOTE:-}" = true ] && return 0
+    [ -n "${CLAUDE_CODE_REMOTE_SESSION_ID:-}" ] && return 0
+    fleet_flag_on "${FLEET_GUIDANCE_OWNER:-}" && return 0
+    [ -n "${FLEET_GUIDANCE_PAYLOAD:-}" ] && return 0
+    case "$config_home" in
+        /*) ;;
+        *) [ -n "${HOME:-}" ] || return 1; config_home="$HOME/.config" ;;
+    esac
+    [ -f "$config_home/fleet-guidance/owner" ]
+}
+fleet_delivery_wanted "$@" || exit 0
 
 # Observation is optional and never participates in delivery decisions. The
 # embedded helper ships with this hook; sync needs no additional artifact.
@@ -977,10 +1025,12 @@ strip_managed_block() {
 # FLEET_GUIDANCE_SKIP exists because user memory is GLOBAL on a durable
 # machine. ~/.claude/CLAUDE.md is read in EVERY Claude session on that box, and
 # ~/.codex/AGENTS.md in every Codex session in every project on it, so once a
-# fleet repo has been opened once, the guidance rides along into unrelated
-# projects too. That is a fair trade for some machines and not others, and it
-# is the developer's call, not this hook's. ONE flag governs BOTH surfaces,
-# because the reason to opt out is the same reason on each.
+# delivery has run there, the guidance rides along into unrelated projects
+# too. That is a fair trade for some machines and not others, and it is the
+# developer's call, not this hook's. ONE flag governs BOTH surfaces, because
+# the reason to opt out is the same reason on each. It passes the OWNER GATE
+# (see the header) on any machine, so it is also how a durable machine that
+# got a block from an ungated run removes it.
 #
 # It REMOVES an already-installed block rather than merely declining to write
 # one. Skipping the write alone would leave a block installed by an earlier

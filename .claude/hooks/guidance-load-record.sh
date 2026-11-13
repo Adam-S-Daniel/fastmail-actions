@@ -299,6 +299,31 @@
 
 exec 1>/dev/null 2>/dev/null
 
+# OWNER GATE (docs/decisions/0042-the-guidance-hooks-are-opt-in-on-a-durable-machine.md).
+# The fleet's repos are public and register this hook, so on a DURABLE machine
+# it records nothing, and writes no state, unless the owner signal is present.
+# It runs when ANY of these holds: a hosted session (CLAUDE_CODE_REMOTE=true or
+# a nonempty CLAUDE_CODE_REMOTE_SESSION_ID), FLEET_GUIDANCE_OWNER on (empty,
+# 0, false, no and off, in any case, are off), or the marker file
+# ${XDG_CONFIG_HOME:-$HOME/.config}/fleet-guidance/owner (XDG_CONFIG_HOME only
+# when absolute). The same rule as fleet-memory.sh's, less the two that only
+# a delivery has: FLEET_GUIDANCE_SKIP and a caller-chosen payload.
+guidance_record_wanted() {
+    local config_home="${XDG_CONFIG_HOME:-}"
+    [ "${CLAUDE_CODE_REMOTE:-}" = true ] && return 0
+    [ -n "${CLAUDE_CODE_REMOTE_SESSION_ID:-}" ] && return 0
+    case "${FLEET_GUIDANCE_OWNER:-}" in
+        ""|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) ;;
+        *) return 0 ;;
+    esac
+    case "$config_home" in
+        /*) ;;
+        *) [ -n "${HOME:-}" ] || return 1; config_home="$HOME/.config" ;;
+    esac
+    [ -f "$config_home/fleet-guidance/owner" ]
+}
+guidance_record_wanted || exit 0
+
 command -v python3 >/dev/null 2>&1 || exit 0
 
 GUIDANCE_HOOK_INPUT="$(cat 2>/dev/null)" || GUIDANCE_HOOK_INPUT=""
