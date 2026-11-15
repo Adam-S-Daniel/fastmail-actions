@@ -1,6 +1,6 @@
 {
   "registry": "Adam-S-Daniel/adam-agentskills",
-  "ref": "e2069029fb3feb26bf78668f277b646c9f2c10fe",
+  "ref": "7c01814fbed9eb20608d7f69037b925f4b1a8705",
   "bundles": [
     "adam-anything-anywhere",
     "adam-coding-anywhere"
@@ -8,15 +8,15 @@
   "skills": {
     "adam-anything-anywhere/finding-unknowns": "sha256:de8ba4767b859db1109a6b866de913674f0d876205bd5293a55cdc55600f6a36",
     "adam-anything-anywhere/writing-adrs": "sha256:88722a1b11d7def8b6927c81e99a2774e9f2748174bf9d7d3116f1091a26b7e3",
-    "adam-coding-anywhere/ci-job-performance": "sha256:626243e258879e440f2973af362808534445492feb44e609368db2468945c3f3",
+    "adam-coding-anywhere/ci-job-performance": "sha256:83c331183416eeca814fc5608a93439d29e37d12580e3d32be7330cb3491a48d",
     "adam-coding-anywhere/disarm-inherited-reach": "sha256:0be479e716d574d8b2ef9868ad9a9d8c4b67413b98d5cf0ae331c79efc511ce2",
     "adam-coding-anywhere/fan-out-triage": "sha256:fa2be3d544133f9ddbb4f801807365fed66dbf9885650985c5b2e8337cf19af7",
     "adam-coding-anywhere/github-actions-repo-settings": "sha256:b8d280f4811efcb5a95536272263a635299f8665e86ca9295eb94f7a9b5e130a",
     "adam-coding-anywhere/red-ci-adamdaniel-ai": "sha256:5ec63e5f61b3df9b9acb12eeb20d864f63cc283b27635ac9978269f30817b04c",
     "adam-coding-anywhere/review-bash-ci-reliability": "sha256:fc025b6ccc11282445b6ce1a465b1e80e2fbcbca3cbb66fc9ee1cdfce04dfe2c",
-    "adam-coding-anywhere/skills-doctor": "sha256:95292c14bc03e2bfe9eb438c6b4b1ba5fb19e88fcc42d238f7be229bc6fd8c01",
+    "adam-coding-anywhere/skills-doctor": "sha256:ff81475d0f03394819baef5ff4ece5c47aadada40b3a1737c7b325a6a86d39ec",
     "adam-coding-anywhere/vendor-release-impact-issues": "sha256:7c29bc5f0dc5f34ce510d9a98381d97eb6aa5528e28d903dbd8c304a12b10af1",
     "adam-coding-anywhere/workflow-path-audit": "sha256:0670bcc52f90c9ce2d22bf13acfcaccdc0c7953e5a4fa3406ffe8703611c9f34"
   },
-  "generated_from": "e2069029fb3feb26bf78668f277b646c9f2c10fe"
+  "generated_from": "7c01814fbed9eb20608d7f69037b925f4b1a8705"
 }
