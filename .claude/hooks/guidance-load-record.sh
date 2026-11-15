@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # guidance-load-record.sh — one line per session: did Claude Code load the FULL
 # fleet guidance, or only the repo stub? And, in cloud sessions only, one line
-# per skill use naming the skill copy it loaded (phase 2, ADR 0036). Cloud
-# lines go to one private destination per session: the private repo's branch
-# (ADR 0036), or, when the S3 sink is configured, a private S3 bucket that the
-# private repo ingests from (ADR 0037). Nowhere else.
+# per skill use or skill read naming the skill copy it loaded or read (phase
+# 2, ADR 0036). Cloud lines go to one private destination per session: the
+# private repo's branch (ADR 0036), or, when the S3 sink is configured, a
+# private S3 bucket that the private repo ingests from (ADR 0037). Nowhere else.
 #
 # WHAT IT COUNTS
 # --------------
@@ -217,20 +217,40 @@
 # a shared test vector) or one of eight null reasons, the registry and commit
 # where known. A use whose timestamp does not parse is skipped, as the local
 # census skips it. A typed command with no base directory is kept only for a
-# built-in skill or a name skills-bootstrap.sh installed. Bounds per Stop: 50
-# uses, 1.5 s parsing, 3 s hashing, 4 s in all; a use the hash budget did not
-# reach holds the watermark. At most 2000 lines per session.
+# built-in skill or a name skills-bootstrap.sh installed.
+# A read use is a Read, NotebookRead, Grep, Glob or Bash tool_use (keyed on its
+# id) that reads a path under an installed copy: <root>/.claude/skills/<name>
+# (skills/synced/<name> names <name>), or <root>/.claude/plugins/ followed
+# later by /skills/<name>; <root> is absolute, `~`, $HOME or ${HOME} (the last
+# three expand with HOME). Read, NotebookRead, Grep and Glob give the path in
+# file_path, notebook_path, path or pattern. In a Bash command only the
+# arguments of a program that reads files (cat, head, grep, ls, sed without -i
+# and the like) or runs a script (python3, bash, node and the like), or a copy's
+# script run directly, count: a path a command writes, copies, deletes, fetches
+# or only mentions does not. A relative path, a registry checkout's
+# plugins/<p>/skills/<name> (no `.claude`) and a directory that does not exist
+# never count. Its copy is that <name> directory, resolved exactly as a use's
+# base directory, and its name is the
+# bare directory name. At most one read line per session and name (state
+# remembers the names), keyed on the first qualifying read, and none for a
+# name the session has called (a Skill call or typed command anywhere in the
+# main or subagent transcripts, this Stop or an earlier one); one tool_use
+# yields at most one read line, for its first name still due. Reads past the
+# watermark wait, as uses do. Bounds per Stop: 50 uses and reads, 1.5 s
+# parsing, 3 s hashing, 4 s in all; one the hash budget did not reach holds
+# the watermark. At most 2000 lines per session, uses and reads together.
 #
 # Each use becomes one line in a local pending file, then, after phase 1, in
 #   events/<YYYY-MM of the use>/cloud-skills/<session>.jsonl
 # on the same private branch (no other destination; nothing reaches
-# sessions.jsonl), with exactly these keys:
+# sessions.jsonl), with exactly these keys (a read use the same, with
+# "kind":"skill-read"):
 #   {"v":1,"id":"<tool_use id | entry uuid>","ts":"<use time, Z>","kind":"skill",
 #    "surface":"cloud","session":"<16 hex, as phase 1>","cli":"<version>"|null,
 #    "name":"<skill name>"|"invalid","base_kind":"<where the copy lives>",
 #    "registry":"<owner>/<repo>"|null,"ref":"<40 hex>"|null,
 #    "digest":"<64 hex>"|null,"digest_null_reason":"<reason>"|null}
-# No path (the base directory is resolved and dropped), title, prompt,
+# No path (the base or read directory is resolved and dropped), title, prompt,
 # transcript text, cwd, machine name, raw session id, remote URL or credential
 # is ever written. The upload uses the session's route: the S3 sink above, or
 # the git path above with the session's own credential, and no App. On the git
@@ -344,6 +364,7 @@ import hmac
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -470,6 +491,19 @@ HTTPS_GITHUB_RE = re.compile(
     r"https://github\.com/([A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}?)(?:\.git)?")
 COMMAND_NAME_RE = re.compile(r"<command-name>([^<]{0,200})</command-name>")
 BASE_DIR_LINE = "Base directory for this skill: "
+# A skill read (see CLOUD SKILL RECORDS in the header): a Read, NotebookRead,
+# Grep or Glob of an absolute path in an installed copy,
+# `<root>/.claude/skills/<name>` (`skills/synced/<name>` keys `<name>`) or
+# `<root>/.claude/plugins/.../skills/<name>`, or such a path as an argument of
+# a Bash program that reads files or runs a script, or run directly. A path a
+# command writes, copies, deletes, fetches or only mentions (a commit message,
+# an echo, a heredoc), a relative path and a registry checkout (no `.claude`)
+# never count. Kept in step with skills-evals' model_usage_census.skill_reads.
+READ_TOOLS = {"Read": ("file_path",), "NotebookRead": ("notebook_path",), "Grep": ("path",),
+              "Glob": ("path", "pattern")}
+READ_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+READ_ROOT_RE = re.compile(r"(~|\$HOME|\$\{HOME\}|)/")
+MAX_READ_INPUT = 64 << 10       # characters of one tool input searched for paths
 # Claude Code's built-in prompt skills, which write no base-directory message.
 BUILTIN_SKILLS = frozenset({"schedule", "update-config", "loop", "simplify",
                             "artifact-design", "workflow-authoring"})
@@ -1479,12 +1513,163 @@ def typed_command(message):
     return None
 
 
+def bare_name(raw):
+    """A Skill call's or typed command's name without a leading `/` or a
+    `<plugin>:` prefix."""
+    name = raw[1:] if raw.startswith("/") else raw
+    return name.split(":", 1)[-1]
+
+
+def skill_copy(path, home):
+    """(skill name, copy directory) for an absolute path inside an installed
+    skill copy, else None; `~` and $HOME expand with HOME."""
+    root = READ_ROOT_RE.match(path)
+    if root is None:
+        return None
+    if root.group(1):
+        if not home.startswith("/"):
+            return None
+        path = home.rstrip("/") + path[root.end() - 1:]
+    parts = path.split("/")
+    if ".." in parts:
+        return None
+    for i, part in enumerate(parts):
+        if part != ".claude":
+            continue
+        rest = parts[i + 1:]
+        if rest[:1] == ["skills"]:
+            mid = rest[:1]
+            if rest[1:2] == ["synced"]:
+                mid = rest[:2]
+        elif rest[:1] == ["plugins"] and "skills" in rest[1:]:
+            mid = rest[:rest.index("skills", 1) + 1]
+        else:
+            continue
+        name = rest[len(mid)] if len(rest) > len(mid) else ""
+        if not READ_NAME_RE.fullmatch(name):
+            return None
+        return name, "/".join(parts[:i + 1] + mid + [name])
+    return None
+
+
+#: Programs whose path arguments a command reads (or runs, for a skill script).
+#: awk and perl are left out: `awk -i inplace` and `perl -pi` write.
+READ_PROGRAMS = frozenset({"cat", "head", "tail", "less", "more", "bat", "nl", "wc", "grep",
+                           "egrep", "fgrep", "rg", "ls", "tree", "stat", "file", "sed", "find",
+                           "python", "python3", "bash", "sh", "node", "ruby"})
+#: Words that run the command after them: the reading program follows.
+COMMAND_PREFIXES = frozenset({"sudo", "env", "time", "nohup", "command", "exec"})
+#: Options after which a reading program writes, deletes or runs something.
+WRITE_FLAGS = {"sed": re.compile(r"-[A-Za-z]*i.*|--in-place.*"),
+               "find": re.compile(r"-(delete|exec|execdir|ok|okdir|fprint.*)")}
+PATTERN_PROGRAMS = frozenset({"grep", "egrep", "fgrep", "rg"})
+HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
+SHELL_SEPARATORS = frozenset(";&|\n()")
+
+
+def without_heredoc_bodies(command):
+    """`command` with each here-document's body left out: a body is data a
+    command reads from stdin, never a command line."""
+    out, end = [], None
+    for line in command.split("\n"):
+        if end is not None:
+            if line.strip() == end:
+                end = None
+            continue
+        out.append(line)
+        found = HEREDOC_RE.search(line)
+        if found:
+            end = found.group(2)
+    return "\n".join(out)
+
+
+def shell_tokens(text):
+    lex = shlex.shlex(text, posix=True, punctuation_chars=";&|<>()\n")
+    lex.whitespace = " \t\r"
+    lex.whitespace_split = True
+    return list(lex)
+
+
+def bash_read_paths(command):
+    """The path arguments of each simple command in `command` whose program
+    reads files (READ_PROGRAMS, or a path run directly). Here-document bodies
+    are skipped; a command that does not tokenize whole is read line by line,
+    so one stray quote loses only its own line. A write flag (`sed -i`,
+    `find -delete`), a redirection target and a grep pattern are not reads."""
+    command = without_heredoc_bodies(command)
+    try:
+        tokens = shell_tokens(command)
+    except ValueError:
+        tokens = []
+        for line in command.split("\n"):
+            try:
+                tokens += shell_tokens(line) + [";"]
+            except ValueError:
+                continue
+    paths, segment = [], []
+    for token in tokens + [";"]:
+        if token and set(token) <= SHELL_SEPARATORS:
+            words = [w for w in segment if not ASSIGN_RE.fullmatch(w)]
+            while words and words[0] in COMMAND_PREFIXES:
+                words = [w for w in words[1:] if not ASSIGN_RE.fullmatch(w)]
+            if words:
+                program = re.split(r"[/\\]", words[0])[-1]
+                args = words[1:]
+                flags = WRITE_FLAGS.get(program)
+                if ".claude/" in words[0] or ".claude\\" in words[0]:
+                    paths.append(words[0])
+                elif program in READ_PROGRAMS and not (
+                        flags and any(flags.fullmatch(w) for w in args)):
+                    if program in PATTERN_PROGRAMS and not any(
+                            w in ("-e", "-f") or w.startswith(("-e", "-f", "--regexp", "--file"))
+                            for w in args):
+                        plain = [i for i, w in enumerate(args) if not w.startswith("-")]
+                        if plain:
+                            args = args[:plain[0]] + args[plain[0] + 1:]
+                    paths += args
+            segment = []
+        elif token and set(token) <= set("<>"):
+            segment.append(token)
+        elif segment and segment[-1] in (">", ">>", "<>", ">|"):
+            segment.pop()              # a redirection target is written, not read
+        else:
+            segment.append(token)
+    return paths
+
+
+def read_targets(item):
+    """[(skill name, copy directory)] for the installed skill copies a
+    Read/NotebookRead/Grep/Glob/Bash tool_use reads, in order and once each.
+    Paths never leave this hook."""
+    tool, given = item.get("name"), item.get("input")
+    if not isinstance(tool, str) or not isinstance(given, dict):
+        return []
+    if tool == "Bash":
+        command = given.get("command")
+        candidates = bash_read_paths(command[:MAX_READ_INPUT]) \
+            if isinstance(command, str) else []
+    else:
+        candidates = [given.get(key) for key in READ_TOOLS.get(tool, ())]
+    home = os.environ.get("HOME") or ""
+    out, names = [], set()
+    for path in candidates:
+        found = skill_copy(path, home) if isinstance(path, str) and ".claude/" in path else None
+        if found is None or found[0] in names:
+            continue
+        names.add(found[0])
+        out.append(found)
+    return out
+
+
 def scan(path, mark, session, parse_end):
-    """(settled uses, cutoff offset, (dev, ino)) for one transcript from its
-    watermark, or None when it cannot be read. Only complete lines whose
-    `sessionId` is this session's count; the cutoff never passes a use that
-    is not settled yet (no base-directory message, no tool result, no later
-    assistant turn)."""
+    """(settled uses, cutoff offset, (dev, ino), skill reads, called names)
+    for one transcript from its watermark, or None when it cannot be read.
+    Only complete lines whose `sessionId` is this session's count; the cutoff
+    never passes a use that is not settled yet (no base-directory message, no
+    tool result, no later assistant turn). Reads are the read tool_uses before
+    the cutoff that name an installed copy; called names are the bare names
+    of every Skill call and typed command parsed, settled or not."""
     if monotonic() >= parse_end:
         return None
     try:
@@ -1516,8 +1701,8 @@ def scan(path, mark, session, parse_end):
     end = data.rfind(b"\n")
     if end < 0:
         # A whole read with no newline is skipped, not retried forever.
-        return [], off + len(data) if len(data) >= MAX_SCAN else off, ident
-    uses, by_call, by_parent, results = [], {}, {}, set()
+        return [], off + len(data) if len(data) >= MAX_SCAN else off, ident, [], set()
+    uses, by_call, by_parent, results, reads, called = [], {}, {}, set(), [], set()
     last_assistant, pos, idx, limit = -1, 0, 0, end + 1
     while pos <= end:
         if monotonic() >= parse_end:
@@ -1539,11 +1724,20 @@ def scan(path, mark, session, parse_end):
             last_assistant = idx
             content = message.get("content")
             for item in content if isinstance(content, list) else ():
-                if not (isinstance(item, dict) and item.get("type") == "tool_use"
-                        and item.get("name") == "Skill"):
+                if not (isinstance(item, dict) and item.get("type") == "tool_use"):
+                    continue
+                if item.get("name") != "Skill":
+                    targets = read_targets(item)
+                    call = item.get("id")
+                    if targets and isinstance(call, str) and ID_RE.fullmatch(call):
+                        reads.append({"id": call, "targets": targets, "read": True, "typed": False,
+                                      "start": start, "ts": entry.get("timestamp"),
+                                      "cli": entry.get("version")})
                     continue
                 call, given = item.get("id"), item.get("input")
                 name = given.get("skill") if isinstance(given, dict) else None
+                if isinstance(name, str) and name:
+                    called.add(bare_name(name))
                 if isinstance(call, str) and ID_RE.fullmatch(call) and call not in by_call \
                         and isinstance(name, str) and name:
                     use = {"id": call, "name": name, "typed": False, "idx": idx, "start": start,
@@ -1566,6 +1760,8 @@ def scan(path, mark, session, parse_end):
                         and isinstance(item.get("tool_use_id"), str):
                     results.add(item["tool_use_id"])
             command, uuid = typed_command(message), entry.get("uuid")
+            if command:
+                called.add(bare_name(command))
             if command and isinstance(uuid, str) and ID_RE.fullmatch(uuid) and uuid not in by_parent:
                 use = {"id": uuid, "name": command, "typed": True, "idx": idx, "start": start,
                        "ts": entry.get("timestamp"), "cli": entry.get("version"), "base": None}
@@ -1577,8 +1773,8 @@ def scan(path, mark, session, parse_end):
                 or last_assistant > use["idx"]:
             settled.append(use)
             continue
-        return settled, use["start"], ident
-    return settled, off + limit, ident
+        return settled, use["start"], ident, [r for r in reads if r["start"] < use["start"]], called
+    return settled, off + limit, ident, reads, called
 
 
 def path_shape(real):
@@ -1890,10 +2086,11 @@ class Cloud:
         doc = load_json(self.path + ".state.json", MAX_STATE)
         doc = doc if isinstance(doc, dict) else {}
         st = {"files": {}, "seen": [], "fails": 0, "next_try": 0, "nocred": False, "n": 0,
-              "overflow": 0}
+              "overflow": 0, "called": [], "rnames": []}
         # Phase 3's keys are present only once it has read a run log.
         for key, kind in (("files", dict), ("seen", list), ("fails", int), ("next_try", (int, float)),
                           ("nocred", bool), ("n", int), ("overflow", int),
+                          ("called", list), ("rnames", list),
                           ("hlog", dict), ("hseen", list), ("hn", int), ("hoverflow", int)):
             if isinstance(doc.get(key), kind) and not (kind is int and isinstance(doc[key], bool)):
                 st[key] = doc[key]
@@ -1901,6 +2098,9 @@ class Cloud:
 
     def save_state(self, st):
         st["seen"] = st["seen"][-2 * SESSION_CAP:]
+        for key in ("called", "rnames"):
+            if key in st:
+                st[key] = [n for n in st[key] if isinstance(n, str)][-2 * SESSION_CAP:]
         if "hseen" in st:
             st["hseen"] = st["hseen"][-2 * SESSION_CAP:]
         write_atomic(self.path + ".state.json", json.dumps(st, separators=(",", ":")).encode("utf-8"))
@@ -1952,6 +2152,8 @@ class Cloud:
         when = parse_ts(use["ts"])
         if when is None:
             return None                  # undated: skipped, as the local census does
+        if use.get("read") and not os.path.isdir(use["base"]):
+            return None                  # no copy there: a probe, not a read of a skill
         copy = self.copies.resolve(name if valid else None, use["base"], when, hash_end)
         if use["typed"] and use["base"] is None:
             reason = copy["digest_null_reason"]
@@ -1960,7 +2162,8 @@ class Cloud:
             if not (reason == "builtin" or (reason == "no-base-dir" and self.allowlisted(bare))):
                 return None
         cli = use["cli"]
-        doc = {"v": 1, "id": use["id"], "ts": when.strftime(ISO), "kind": "skill", "surface": "cloud",
+        doc = {"v": 1, "id": use["id"], "ts": when.strftime(ISO),
+               "kind": "skill-read" if use.get("read") else "skill", "surface": "cloud",
                "session": self.sid,
                "cli": cli if isinstance(cli, str) and CLI_RE.fullmatch(cli) else None,
                "name": name if valid else "invalid"}
@@ -1981,17 +2184,31 @@ class Cloud:
         try:
             st = self.load_state()
             seen, new, left, hash_end, stop = set(st["seen"]), [], USES_PER_STOP, None, False
+            # Every file is parsed before any is recorded, so a Skill call
+            # anywhere in the session (this Stop's or an earlier one's) keeps
+            # its name from a read line.
+            scanned, called = [], set(st["called"])
             for key, path in self.files():
-                if stop:
-                    break
                 mark = st["files"].get(key)
                 found = scan(path, mark if isinstance(mark, dict) else {}, self.session, parse_end)
-                if found is None:
-                    continue
-                uses, cutoff, ident = found
-                for use in uses:
+                if found is not None:
+                    scanned.append((key, found))
+                    called |= found[4]
+            read_names = set(st["rnames"])
+            for key, (uses, cutoff, ident, reads, _called) in scanned:
+                if stop:
+                    break
+                # A call and the reads in one entry share its offset; the call goes first.
+                for use in sorted(uses + reads, key=lambda u: u["start"]):
                     if use["id"] in seen:
                         continue
+                    if use.get("read"):
+                        target = next(((n, b) for n, b in use["targets"]
+                                       if n not in called and n not in read_names
+                                       and os.path.isdir(b)), None)
+                        if target is None:
+                            continue
+                        use = dict(use, name=target[0], base=target[1])
                     if left <= 0:
                         cutoff, stop = use["start"], True
                         break
@@ -2005,6 +2222,9 @@ class Cloud:
                     left -= 1
                     if line is None:
                         continue
+                    if use.get("read"):
+                        read_names.add(use["name"])
+                        st["rnames"].append(use["name"])
                     if st["n"] >= SESSION_CAP:
                         st["overflow"] += 1
                         continue
@@ -2013,6 +2233,7 @@ class Cloud:
                     st["seen"].append(use["id"])
                     new.append(line)
                 st["files"][key] = {"off": cutoff, "dev": ident[0], "ino": ident[1]}
+            st["called"] = sorted(called)
             if new:
                 pending = self.load_pending()
                 have = {i for i, _m, _t in pending}
