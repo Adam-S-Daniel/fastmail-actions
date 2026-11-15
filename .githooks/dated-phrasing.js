@@ -33,7 +33,12 @@
  * inline code, HTML, block quotes, URLs and link text are exempt, the last
  * because a date in link text names an evidence file):
  *   - an ISO date, YYYY-MM-DD, that is a real calendar day;
- *   - the phrases in PHRASES, case-insensitive, whole words.
+ *   - the phrases in PHRASES, case-insensitive, whole words: fixed phrases,
+ *     plus "now <verb>s" ("now closes", "now runs") and "before this existed",
+ *     which say what changed rather than what holds;
+ *   - an issue or pull request number, `#123` or `owner/repo#123`. Rule text
+ *     that leans on a number is read only by someone who opens it; the number
+ *     belongs in link text (exempt) or in docs/evidence/.
  *
  * Allowlist. Text that is right as written (a present-tense fact that happens
  * to use a listed phrase, a date that qualifies a measurement) is listed in
@@ -76,7 +81,14 @@ const PHRASES = [
   /\bas of\b/gi,
   /\brecently\b/gi,
   /\bused to be\b/gi,
+  /\bbefore (?:this|that|it) existed\b/gi,
 ];
+// "now <verb>s": a third-person verb after "now" says something changed. The
+// lookahead drops common words that end in "s" and are not such a verb.
+const NOW_VERB = /\bnow (?!(?:this|is|was|its|as|us|yes|always|thus|plus|unless|across|[a-z]*ss)\b)[a-z]+s\b/gi;
+// An issue or PR number, bare or with its repo. Not after a word character,
+// "/" or "&", so a URL fragment or an HTML entity is not one.
+const REF = /(?<![\w/&#])(?:[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)?#\d+\b/g;
 const URL = /https?:\/\/\S+/g;
 
 function inScope(rel) {
@@ -106,7 +118,9 @@ function warn(message, file, line) {
 }
 
 function hitMessage(hit) {
-  const what = hit.date ? `a date in prose, "${hit.text}"` : `the phrase "${hit.text}"`;
+  const what = hit.date ? `a date in prose, "${hit.text}"`
+    : hit.ref ? `an issue or pull request number in prose, "${hit.text}"`
+    : `the phrase "${hit.text}"`;
   return `dated phrasing: ${what}. Instruction files load into every session and are read as the rule that holds now, ` +
     "so history (what changed, and when) goes stale here and belongs in docs/evidence/ or git. " +
     "Reword it as the present-tense rule; if it is right as written, add a line to " +
@@ -172,8 +186,11 @@ function matchText(content) {
       found.push({ start: m.index, end: m.index + m[0].length, text: m[0], date: true });
     }
   }
-  for (const re of PHRASES) {
+  for (const re of [...PHRASES, NOW_VERB]) {
     for (const m of text.matchAll(re)) found.push({ start: m.index, end: m.index + m[0].length, text: m[0], date: false });
+  }
+  for (const m of text.matchAll(REF)) {
+    found.push({ start: m.index, end: m.index + m[0].length, text: m[0], date: false, ref: true });
   }
   found.sort((a, b) => a.start - b.start || b.end - a.end);
   const kept = [];
@@ -184,7 +201,7 @@ function matchText(content) {
   return kept;
 }
 
-// The hits in one file's source: [{ line, text, date, block }].
+// The hits in one file's source: [{ line, text, date, ref, block }].
 function scan(md, rel, src) {
   const lines = src.split("\n");
   const tokens = md.parse(src, {});
@@ -218,7 +235,7 @@ function scan(md, rel, src) {
       else if (c.type === "link_close") inLink--;
       else if (c.type === "html_inline") line += c.content.split("\n").length - 1;
       else if (c.type === "text" && !inLink) {
-        for (const m of matchText(c.content)) hits.push({ line, text: m.text, date: m.date, block });
+        for (const m of matchText(c.content)) hits.push({ line, text: m.text, date: m.date, ref: m.ref, block });
       }
     }
   }
