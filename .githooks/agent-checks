@@ -126,10 +126,28 @@ file_content() {
 #
 # Each arm refuses with `problem lesson-<id> "..."`, and lists that same
 # check id in lesson_checks, so the run log counts the check as run.
-lesson_checks=""
+lesson_checks="lesson-memory-485-1"
 
 check_lessons() {
-  :
+  local fixture_text uses
+  case "$1" in
+    evals/guidance/*/*/fixture.yaml|evals/guidance/*/*/fixture.yml)
+      # Only skills-evals has the harness these fixtures run in.
+      [ -n "$(file_content harness/run_eval.py)" ] || return 0
+      fixture_text=$(file_content "$1")
+      # Parse with a real YAML parser; skip quietly when none is installed.
+      uses=$(python3 -c 'import sys, yaml
+try:
+    d = yaml.safe_load(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+c = d.get("objective_checks") if isinstance(d, dict) else None
+if isinstance(c, list) and any(isinstance(x, dict) and x.get("type") == "command_succeeds" for x in c):
+    print("yes")' <<<"$fixture_text" 2> /dev/null || true)
+      if [ "$uses" = yes ]; then
+        problem lesson-memory-485-1 "$1: a guidance fixture must not use a command_succeeds check. Routine eval containers lack bwrap, so it fails closed in every arm and the fixture can never tell the arms apart. Use file_matches on files the agent leaves behind."
+      fi ;; # lesson: memory-485-1
+  esac
 }
 
 # Codex's limit for project instructions, in bytes: it truncates AGENTS.md at
