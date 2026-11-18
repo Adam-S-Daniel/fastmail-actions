@@ -5,7 +5,7 @@
 # so those pins had no bump path — they'd sit until someone noticed. This
 # onboards the github-actions ecosystem so pins (an exact release tag in the
 # workflow plus its commit in .github/workflows/actions.lock, which Dependabot
-# updates together) get proposed weekly, landed
+# updates together) get proposed daily, landed
 # unattended by .github/workflows/dependabot-auto-merge.yml once CI is
 # green (see that file for how its scheduled sweep decides what to merge).
 version: 2
@@ -13,19 +13,19 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-    # GROUPING — one weekly run opens ONE PR for every third-party action
+      interval: daily
+    # GROUPING — one daily run opens ONE PR for every third-party action
     # bump instead of sibling PRs that land in the same run and often edit
     # the same workflow files: once one sibling merges, the others fall
-    # behind and need a rebase before they can land. cms-platform is excluded
-    # because it already skips the 7-day cooldown below (see that key's
-    # `exclude`) and arrives on its own schedule; grouping it with the
-    # third-party batch would tie its faster cadence to the slower one's
-    # weekly run.
+    # behind and need a rebase before they can land. Our own actions
+    # (Adam-S-Daniel/*, jodidaniel/*) are excluded because they already skip
+    # the 7-day cooldown below (see that key's `exclude`) and arrive as soon
+    # as they are released; grouping them with the third-party batch would
+    # hold them to its slower, cooled-down cadence, so each gets its own PR.
     groups:
       github-actions:
         patterns: ["*"]
-        exclude-patterns: ["Adam-S-Daniel/cms-platform/*"]
+        exclude-patterns: ["Adam-S-Daniel/*", "jodidaniel/*"]
     # MINIMUM PACKAGE AGE ("cooldown") — how long a release must exist before
     # Dependabot will even OPEN the PR. Version updates ONLY: security
     # updates bypass cooldown by GitHub's spec, so an advisory still opens
@@ -55,18 +55,11 @@ updates:
     # the support.
     cooldown:
       default-days: 7
-      # cms-platform releases are this account's own code, gated by its own
-      # required checks before a tag ever exists, so they don't need the
-      # 7-day cooling-off above — that applies to third-party actions. This
-      # entry used to ignore cms-platform bumps outright: the
-      # scheduled-run-health thin caller carried the platform version TWICE
-      # (the reusable's `uses:@<tag>` and a `platform_ref:` input), and this
-      # ecosystem saw only the `uses:` half, so an unignored bump would have
-      # moved the workflow and left the script pin behind — exactly the
-      # two-halves skew cms-platform#244 was filed for, after ONE platform
-      # release produced fifteen piecemeal bump PRs in jodidaniel.com
-      # (#8-#22). The reusable now resolves its own script commit from the
-      # job context, so the caller names the version once, and this exclude
-      # is what lets that one bump land without the third-party wait
-      # (https://github.com/Adam-S-Daniel/cms-platform/issues/424).
-      exclude: ["Adam-S-Daniel/cms-platform/*"]
+      # Our own actions skip the 7-day wait above. That cooling-off guards
+      # against a bad third-party release; an Adam-S-Daniel or jodidaniel
+      # action is this account's own code, gated by its own required checks
+      # before a tag exists. `Adam-S-Daniel/*` also covers the cms-platform
+      # reusable workflows, so it replaces the narrower
+      # `Adam-S-Daniel/cms-platform/*` entry that
+      # https://github.com/Adam-S-Daniel/cms-platform/issues/424 added.
+      exclude: ["Adam-S-Daniel/*", "jodidaniel/*"]
