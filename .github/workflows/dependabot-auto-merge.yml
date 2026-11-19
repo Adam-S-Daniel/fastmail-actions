@@ -89,6 +89,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # `gh pr view --json statusCheckRollup` reads the head commit's check runs
+  # and commit statuses; without these two GraphQL answers "Resource not
+  # accessible by integration" (security-alerts#15, 2026-11-19).
+  checks: read
+  statuses: read
 
 jobs:
   sweep:
