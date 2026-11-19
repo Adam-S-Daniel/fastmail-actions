@@ -24,7 +24,12 @@
 #
 # COMMIT PROVENANCE: the PR author alone proves nothing, since anyone with
 # write access can push a commit onto a dependabot/* branch. Every commit on
-# the PR must be Dependabot's own and GitHub-verified. That proves WHO wrote
+# the PR must be Dependabot's own and GitHub-verified: author dependabot[bot]
+# (login and id), committer web-flow (login, id, noreply@github.com) and
+# verification reason "valid". The committer matters because the REST author
+# is whoever owns the author EMAIL, which anyone can set to Dependabot's, and
+# "verified" vouches for the committer's signature, not the author: only a
+# genuine Dependabot commit is committed by web-flow. That proves WHO wrote
 # the commits, not that CI ran on them: CI coverage rests on the outside-check
 # floor above and on each repo's ruleset. A PR with any other commit (a person's,
 # an unverified one, or a github-actions[bot] merge commit pushed by an older
@@ -319,7 +324,7 @@ jobs:
             # closed, captured through command substitutions, never
             # `< <(...)`.
             if ! commits_raw=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${num}/commits?per_page=100" \
-              --jq '.[] | {sha: .sha, l: (.author.login // ""), v: (.commit.verification.verified == true)} | @json' 2>/dev/null); then
+              --jq '.[] | {sha: .sha, l: (.author.login // ""), ai: (.author.id // 0), cl: (.committer.login // ""), ci: (.committer.id // 0), ce: (.commit.committer.email // ""), v: (.commit.verification.verified == true), r: (.commit.verification.reason // "")} | @json' 2>/dev/null); then
               echo "::warning::skip #${num} — could not list its commits through the API; not merging a PR whose authorship cannot be read"
               SKIPPED=$((SKIPPED + 1))
               continue
@@ -336,7 +341,10 @@ jobs:
             # update-branch is not accepted). Only sanitized characters of the
             # login are ever printed.
             if ! bad_commit=$(jq -rs '
-              [.[] | select((.l == "dependabot[bot]" and .v == true) | not)]
+              [.[] | select((.l == "dependabot[bot]" and .ai == 49699333
+                and .cl == "web-flow" and .ci == 19864447
+                and .ce == "noreply@github.com"
+                and .v == true and .r == "valid") | not)]
               | first // empty
               | "\(.sha | tostring | gsub("[^0-9a-f]"; "") | .[0:7]) \(.l | gsub("[^A-Za-z0-9_.\\[\\]-]"; ""))"
             ' <<<"$commits_raw" 2>/dev/null); then
