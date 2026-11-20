@@ -34,18 +34,15 @@ BeforeDiscovery {
     # alert to the owner and changes nothing in the mail account.
     $script:OpenToDispatchers = @('send-self-alert.yml/send-self-alert')
 
-    # Any way an expression can read a secret other than the built-in token:
-    # secrets.NAME, secrets['NAME'], the whole context (toJSON(secrets)), or a
-    # reusable-workflow job's `secrets: inherit`.
+    # Any way a workflow can read a secret other than the built-in token:
+    # secrets.NAME, secrets['NAME'] (with or without ${{ }}, as a bare `if:`
+    # allows), the whole context passed to a function (toJSON(secrets)), or a
+    # reusable-workflow job's `secrets: inherit`. It errs toward "reads one":
+    # a false hit only forces a job to be fenced or listed as open.
     function Test-ReadsSecret([string]$Json) {
-        $named = [regex]::Matches($Json, 'secrets\.([A-Za-z0-9_]+)') |
-            ForEach-Object { $_.Groups[1].Value } |
-            Where-Object { $_ -cne 'GITHUB_TOKEN' }
-        if ($named) { return $true }
-        # Any other mention of the context inside an expression, or the
-        # `secrets: inherit` key (serialized as "secrets": "inherit").
-        return [bool]([regex]::IsMatch($Json, '\$\{\{[^}]*\bsecrets\s*[\[)\s}]') -or
-            [regex]::IsMatch($Json, '"secrets"\s*:\s*"inherit"'))
+        $rest = $Json -creplace 'secrets\.GITHUB_TOKEN\b', ''
+        return [bool]([regex]::IsMatch($rest, '\bsecrets\s*(\.|\[|\))') -or
+            [regex]::IsMatch($rest, '"secrets"\s*:\s*"inherit"'))
     }
 
     $script:SecretJobs = @()

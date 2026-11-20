@@ -76,8 +76,10 @@ committed):
      enough**: without Email Submission the API returns
      `403 … Disallowed capabilities … urn:ietf:params:jmap:submission`.
 2. Create the environment and restrict it to the default branch: **Settings →
-   Environments → New environment**, name `mail`, then **Deployment branches
-   and tags → Selected branches and tags → Add rule → `main`**.
+   Environments → New environment**, name `mail` (or open it, if a run of a
+   mail workflow has already created it: GitHub creates a missing environment
+   on first use, with no branch rule), then **Deployment branches and tags →
+   Selected branches and tags → Add rule → `main`**.
 3. Store the token as a secret of that environment — in the GitHub UI (on the
    environment's page, **Add environment secret**, name `FASTMAIL_API_TOKEN`),
    or with the CLI:
@@ -338,8 +340,13 @@ version, so it's not listed here.)
 - The three mail workflows declare `permissions: contents: read`: their
   `GITHUB_TOKEN` cannot push, comment, or alter the repo.
   `dependabot-auto-merge` and `scheduled-run-health` hold write scopes for
-  their own purpose and read no mail secret; an App that can dispatch
-  workflows can only make them run early.
+  their own purpose and read no mail secret. An App that can dispatch
+  workflows can make the current copies run early, and nothing more.
+- **No stale branches.** A dispatcher chooses the branch, and the run uses that
+  branch's copy of the workflow with that copy's `GITHUB_TOKEN` scopes. An old
+  branch can carry an older `dependabot-auto-merge.yml` with a weaker merge
+  gate than `main`'s. Delete a branch once its pull request is merged; the
+  environment covers the mail token, not this.
 - The session GET disallows redirects and refuses a non-HTTPS `apiUrl`, so the
   bearer token can't be forwarded to another host.
 - The Pester CI runs on `pull_request`; enable **"require approval for all
