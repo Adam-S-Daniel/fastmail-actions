@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Sends one plain-text message with the given subject and body from
-  SELF_ALERT_FROM to SELF_ALERT_TO (repo secrets; this repo is public, so no
+  SELF_ALERT_FROM to SELF_ALERT_TO (secrets of the `mail` environment; this repo is public, so no
   address lives in the code). The From address must already be a sending
   identity on the account.
 

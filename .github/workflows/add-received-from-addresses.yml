@@ -44,7 +44,32 @@ permissions:
 jobs:
   add-received-from-addresses:
     runs-on: ubuntu-latest
+    # The Fastmail token is a secret of the `mail` ENVIRONMENT, which only the
+    # default branch may use. `workflow_dispatch` runs the workflow file of
+    # whatever branch the dispatcher names, so a guard in this file alone can
+    # be sidestepped by dispatching an older copy on another branch; with the
+    # token in the environment, that copy gets no token.
+    environment: mail
     steps:
+      # This workflow changes the mail account, so only the repository owner
+      # (or its own schedule) may run it. A GitHub App holds "Actions: write"
+      # here so other repositories can dispatch send-self-alert.yml, and that
+      # permission can start or re-run ANY workflow in this repository; GitHub
+      # has no narrower one. A re-run keeps the ORIGINAL run's actor, event
+      # and inputs; only `triggering_actor` (whoever started THIS attempt) and
+      # `run_attempt` change. So a manual run passes only when the owner both
+      # started it and started this attempt (the owner re-running a run that
+      # someone else dispatched is refused: its inputs are theirs), and a
+      # scheduled run passes on its first attempt, or when the owner re-runs
+      # it. First step, before the checkout and before any step that reads a
+      # secret. (act has no triggering actor; ACT is set only by act itself.)
+      - name: Refuse anyone but the repository owner
+        if: ${{ env.ACT != 'true' && !((github.event_name == 'schedule' && (github.run_attempt == 1 || github.triggering_actor == github.repository_owner)) || (github.event_name != 'schedule' && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner)) }}
+        shell: bash
+        run: |
+          echo "::error::Only the repository owner may run this workflow."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v7.0.1
 

@@ -23,6 +23,12 @@ permissions:
 jobs:
   send-self-alert:
     runs-on: ubuntu-latest
+    # The Fastmail token is a secret of the `mail` ENVIRONMENT, which only the
+    # default branch may use. `workflow_dispatch` runs the workflow file of
+    # whatever branch the dispatcher names, so a guard in this file alone can
+    # be sidestepped by dispatching an older copy on another branch; with the
+    # token in the environment, that copy gets no token.
+    environment: mail
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1

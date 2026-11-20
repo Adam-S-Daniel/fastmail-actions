@@ -61,10 +61,11 @@ fastmail-actions: add-received-from-addresses (dry run, nothing new)
 
 The subject carries a count, never an address.
 
-## Setup — the `FASTMAIL_API_TOKEN` secret
+## Setup — the `mail` environment and the `FASTMAIL_API_TOKEN` secret
 
-The workflows read the token from the repository secret **`FASTMAIL_API_TOKEN`**.
-You must create it once (this repo ships no token, and the value is never
+The workflows read the token from the secret **`FASTMAIL_API_TOKEN`** of a
+GitHub **environment** named `mail`, never from a repository-level secret.
+You must create both once (this repo ships no token, and the value is never
 committed):
 
 1. In Fastmail: **Settings → Privacy & Security → Integrations → API tokens →
@@ -74,14 +75,35 @@ committed):
      which owns `Identity/get` and `Identity/set`. **Mail scope alone is not
      enough**: without Email Submission the API returns
      `403 … Disallowed capabilities … urn:ietf:params:jmap:submission`.
-2. Store it as a repository secret — either in the GitHub UI
-   (**Settings → Secrets and variables → Actions → New repository secret**,
-   name `FASTMAIL_API_TOKEN`), or with the CLI:
+2. Create the environment and restrict it to the default branch: **Settings →
+   Environments → New environment**, name `mail` (or open it, if a run of a
+   mail workflow has already created it: GitHub creates a missing environment
+   on first use, with no branch rule), then **Deployment branches and tags →
+   Selected branches and tags → Add rule → `main`**.
+3. Store the token as a secret of that environment — in the GitHub UI (on the
+   environment's page, **Add environment secret**, name `FASTMAIL_API_TOKEN`),
+   or with the CLI:
 
    ```sh
-   gh secret set FASTMAIL_API_TOKEN --repo Adam-S-Daniel/fastmail-actions
+   gh secret set FASTMAIL_API_TOKEN --env mail --repo Adam-S-Daniel/fastmail-actions
    # paste the token when prompted (it is not echoed)
    ```
+
+**Why an environment, and why there must be no repository-level copy.**
+`workflow_dispatch` runs the workflow file of whatever branch the dispatcher
+names, and a re-run uses the workflow file of the original run's commit. A
+repository-level secret is handed to all of them, so an older copy of a
+workflow on any branch would run with the token, whatever guard the current
+copy has. An environment secret is handed only to a job that names the
+environment, and only on a branch the environment allows. To check it is still
+so:
+
+```sh
+gh secret list --repo Adam-S-Daniel/fastmail-actions             # no FASTMAIL_API_TOKEN here
+gh secret list --env mail --repo Adam-S-Daniel/fastmail-actions  # FASTMAIL_API_TOKEN here
+gh api repos/Adam-S-Daniel/fastmail-actions/environments/mail/deployment-branch-policies \
+  --jq '[.branch_policies[].name]'                               # ["main"]
+```
 
 Use a tightly-scoped, rotatable token (Mail + Email Submission only). The scripts
 read the token from the environment only and never print or log it.
@@ -182,13 +204,13 @@ only `self-alert sent`.
 
 An empty subject or body fails the run; nothing is sent.
 
-Two repository secrets, in addition to `FASTMAIL_API_TOKEN`. The values are
-never committed, and `SELF_ALERT_FROM` must already be a sending identity on
-the account (see `add-from-address`):
+Two more secrets of the `mail` environment, in addition to
+`FASTMAIL_API_TOKEN`. The values are never committed, and `SELF_ALERT_FROM`
+must already be a sending identity on the account (see `add-from-address`):
 
 ```sh
-gh secret set SELF_ALERT_FROM --repo Adam-S-Daniel/fastmail-actions
-gh secret set SELF_ALERT_TO   --repo Adam-S-Daniel/fastmail-actions
+gh secret set SELF_ALERT_FROM --env mail --repo Adam-S-Daniel/fastmail-actions
+gh secret set SELF_ALERT_TO   --env mail --repo Adam-S-Daniel/fastmail-actions
 ```
 
 **Inputs are visible in a public repo's run.** This repo is public, so send only
@@ -199,6 +221,16 @@ addresses, tokens or other personal data in `subject` or `body`.
 gh workflow run send-self-alert.yml --repo Adam-S-Daniel/fastmail-actions \
   -f subject="Nightly backup failed" -f body="The nightly backup task exited with an error."
 ```
+
+**From a workflow in another repository,** dispatch it as a GitHub App that is
+installed on this repository only, with "Actions: Read and write" and nothing
+else (cms-platform's publish watchdog does this; its
+`docs/CONSUMER-PROVISIONING.md` has the setup). GitHub has no permission for
+"start this one workflow": that App can start or re-run every workflow here, on
+any branch. Two fences keep it to sending this alert, both described under
+[Security & privacy notes](#security--privacy-notes): the token lives in the
+`mail` environment, and the two workflows that change the mail account refuse
+anyone but the repository owner.
 
 ## Repository layout
 
@@ -287,8 +319,34 @@ version, so it's not listed here.)
   `Adam-S-Daniel/cms-platform/...` at a release tag (`@vX.Y.Z`), and that tag is
   deliberate: it is the platform's release identity, moved in lockstep by its
   bump tooling. Do not "fix" it to a SHA.
-- `permissions: contents: read` — the workflows need no write scopes; the
+- **The Fastmail token is handed only to the default branch.** It is a secret
+  of the `mail` environment, which allows `main` only, and there is no
+  repository-level copy (see [Setup](#setup--the-mail-environment-and-the-fastmail_api_token-secret)).
+  A workflow started on another branch, or an older copy of one, gets no token.
+- **Only the owner can run the workflows that change the mail account.**
+  `add-from-address` and `add-received-from-addresses` begin with a step that
+  fails the run unless it is the owner's own: a manual run the owner started
+  AND whose current attempt the owner started, or a scheduled run on its first
+  attempt (or re-run by the owner). It is the first step, before the checkout
+  and before any step that reads a secret. A re-run keeps the original run's
+  actor, event and inputs, so the step checks both who started the run and who
+  started this attempt: nobody else can re-run one of the owner's runs, and the
+  owner re-running a run that someone else dispatched is refused too.
+  `send-self-alert` is deliberately open to the App described under
+  [Send self-alert](#send-self-alert): it sends a short alert to the owner and
+  changes nothing. A new job that reads a secret must name the environment and
+  carry the guard, or be listed as open in `tests/WorkflowOwnerGuard.Tests.ps1`,
+  or that test fails.
+- The three mail workflows declare `permissions: contents: read`: their
   `GITHUB_TOKEN` cannot push, comment, or alter the repo.
+  `dependabot-auto-merge` and `scheduled-run-health` hold write scopes for
+  their own purpose and read no mail secret. An App that can dispatch
+  workflows can make the current copies run early, and nothing more.
+- **No stale branches.** A dispatcher chooses the branch, and the run uses that
+  branch's copy of the workflow with that copy's `GITHUB_TOKEN` scopes. An old
+  branch can carry an older `dependabot-auto-merge.yml` with a weaker merge
+  gate than `main`'s. Delete a branch once its pull request is merged; the
+  environment covers the mail token, not this.
 - The session GET disallows redirects and refuses a non-HTTPS `apiUrl`, so the
   bearer token can't be forwarded to another host.
 - The Pester CI runs on `pull_request`; enable **"require approval for all
