@@ -1017,12 +1017,16 @@ lint_sha256_ok() {
 }
 
 # lint_install <tool> — CI only: install the pinned release binary into the
-# pass's temp directory and set lint_installed to its path. A failure refuses.
+# pass's temp directory and set lint_installed to its path. A failed download
+# or digest refuses (fails closed). A platform with no pin at all (Windows or
+# macOS runners) skips with a notice instead: there is nothing to install, and
+# the fleet's required lint runs on the ubuntu agent-checks job. Refusing there
+# turned adam-agentskills' Windows pytest job red on every runner test.
 lint_install() {
   local t=$1 dir archive
   lint_installed=""
   if ! lint_pin "$t"; then
-    problem lint-tool-install "$t is not on PATH and no pinned release binary exists for this platform ($(uname -s 2> /dev/null) $(uname -m 2> /dev/null)), so its files were not linted. Install $t on the runner (every GitHub-hosted ubuntu runner can), or turn the language off in $lint_conf."
+    lint_notice_once "$t" "lint skipped: $t is not on PATH and no pinned release binary exists for this platform ($(uname -s 2> /dev/null) $(uname -m 2> /dev/null)), so its files were not linted here. The ubuntu agent-checks job lints them."
     return 1
   fi
   dir=$lint_root/bin/$t
