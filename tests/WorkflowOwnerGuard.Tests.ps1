@@ -69,9 +69,10 @@ Describe 'jobs that read a repository secret' -Skip:$script:YamlMissing {
 
     It '<Key> begins with the owner guard' -ForEach ($script:SecretJobs | Where-Object { -not $_.Open }) {
         $First['name'] | Should -BeExactly 'Refuse anyone but the repository owner'
-        # The whole condition, exactly: the attempt's own actor (a re-run of
-        # the owner's old run is refused), the schedule let through, and act.
-        $First['if'] | Should -BeExactly "`${{ env.ACT != 'true' && github.event_name != 'schedule' && github.triggering_actor != github.repository_owner }}"
+        # The whole condition, exactly. A re-run keeps the original actor and
+        # event, so it tests the attempt's own actor, and lets the schedule
+        # through on its first attempt only; act is exempt.
+        $First['if'] | Should -BeExactly "`${{ env.ACT != 'true' && github.triggering_actor != github.repository_owner && !(github.event_name == 'schedule' && github.run_attempt == 1) }}"
         $First.ContainsKey('continue-on-error') | Should -BeFalse
         $First.ContainsKey('uses') | Should -BeFalse
         $First.ContainsKey('env') | Should -BeFalse

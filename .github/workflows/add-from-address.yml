@@ -32,12 +32,15 @@ jobs:
       # (or its own schedule) may run it. A GitHub App holds "Actions: write"
       # here so other repositories can dispatch send-self-alert.yml, and that
       # permission can start or re-run ANY workflow in this repository; GitHub
-      # has no narrower one. `triggering_actor` is whoever started THIS
-      # attempt, so a re-run of the owner's old run is refused too. First
+      # has no narrower one. A re-run keeps the ORIGINAL run's actor and
+      # event; only `triggering_actor` (whoever started THIS attempt) and
+      # `run_attempt` change. So the owner passes on any attempt, and the
+      # schedule passes on its first attempt only: a re-run of the owner's
+      # old run, or of a scheduled run, by anyone else is refused. First
       # step, before the checkout and before any step that reads a secret.
       # (act has no triggering actor; ACT is set only by act itself.)
       - name: Refuse anyone but the repository owner
-        if: ${{ env.ACT != 'true' && github.event_name != 'schedule' && github.triggering_actor != github.repository_owner }}
+        if: ${{ env.ACT != 'true' && github.triggering_actor != github.repository_owner && !(github.event_name == 'schedule' && github.run_attempt == 1) }}
         shell: bash
         run: |
           echo "::error::Only the repository owner may run this workflow."

@@ -297,10 +297,11 @@ version, so it's not listed here.)
   bump tooling. Do not "fix" it to a SHA.
 - **Only the owner can run the workflows that change the mail account.**
   `add-from-address` and `add-received-from-addresses` begin with a step that
-  fails the run unless the repository owner started this attempt, or the
-  schedule did. It is the first step, before the checkout and before any step
-  that reads a secret, and it checks who started the attempt, so re-running one
-  of the owner's old runs is refused too. `send-self-alert` is deliberately
+  fails the run unless the repository owner started this attempt, or it is the
+  first attempt of a scheduled run. It is the first step, before the checkout
+  and before any step that reads a secret. A re-run keeps the original run's
+  actor and event, so the step checks who started THIS attempt: re-running one
+  of the owner's old runs, or a scheduled run, is refused for anyone else. `send-self-alert` is deliberately
   open to the App described under [Send self-alert](#send-self-alert): it sends
   a short alert to the owner and changes nothing. A new job that reads a secret
   must carry the guard or be listed as open in
