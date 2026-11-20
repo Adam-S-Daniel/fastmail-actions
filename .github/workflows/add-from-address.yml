@@ -28,6 +28,21 @@ jobs:
   add-from-address:
     runs-on: ubuntu-latest
     steps:
+      # This workflow changes the mail account, so only the repository owner
+      # (or its own schedule) may run it. A GitHub App holds "Actions: write"
+      # here so other repositories can dispatch send-self-alert.yml, and that
+      # permission can start or re-run ANY workflow in this repository; GitHub
+      # has no narrower one. `triggering_actor` is whoever started THIS
+      # attempt, so a re-run of the owner's old run is refused too. First
+      # step, before the checkout and before any step that reads a secret.
+      # (act has no triggering actor; ACT is set only by act itself.)
+      - name: Refuse anyone but the repository owner
+        if: ${{ env.ACT != 'true' && github.event_name != 'schedule' && github.triggering_actor != github.repository_owner }}
+        shell: bash
+        run: |
+          echo "::error::Only the repository owner may run this workflow."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v7.0.1
 

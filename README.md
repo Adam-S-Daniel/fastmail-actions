@@ -200,6 +200,14 @@ gh workflow run send-self-alert.yml --repo Adam-S-Daniel/fastmail-actions \
   -f subject="Nightly backup failed" -f body="The nightly backup task exited with an error."
 ```
 
+**From a workflow in another repository,** dispatch it as a GitHub App that is
+installed on this repository only, with "Actions: Read and write" and nothing
+else (cms-platform's publish watchdog does this; its
+`docs/CONSUMER-PROVISIONING.md` has the setup). GitHub has no permission for
+"start this one workflow": that App can start or re-run every workflow here.
+So the two workflows that change the mail account refuse anyone but the
+repository owner (see [Security & privacy notes](#security--privacy-notes)).
+
 ## Repository layout
 
 ```
@@ -287,6 +295,16 @@ version, so it's not listed here.)
   `Adam-S-Daniel/cms-platform/...` at a release tag (`@vX.Y.Z`), and that tag is
   deliberate: it is the platform's release identity, moved in lockstep by its
   bump tooling. Do not "fix" it to a SHA.
+- **Only the owner can run the workflows that change the mail account.**
+  `add-from-address` and `add-received-from-addresses` begin with a step that
+  fails the run unless the repository owner started this attempt, or the
+  schedule did. It is the first step, before the checkout and before any step
+  that reads a secret, and it checks who started the attempt, so re-running one
+  of the owner's old runs is refused too. `send-self-alert` is deliberately
+  open to the App described under [Send self-alert](#send-self-alert): it sends
+  a short alert to the owner and changes nothing. A new job that reads a secret
+  must carry the guard or be listed as open in
+  `tests/WorkflowOwnerGuard.Tests.ps1`, or that test fails.
 - `permissions: contents: read` — the workflows need no write scopes; the
   `GITHUB_TOKEN` cannot push, comment, or alter the repo.
 - The session GET disallows redirects and refuses a non-HTTPS `apiUrl`, so the
