@@ -1,65 +1,33 @@
-# Dependabot for this repo.
-#
-# Previously this repo pinned third-party GitHub Actions to commit SHAs (per
-# the account-wide SHA-pinning convention) but had no dependabot.yml at all,
-# so those pins had no bump path — they'd sit until someone noticed. This
-# onboards the github-actions ecosystem so pins (an exact release tag in the
-# workflow plus its commit in .github/workflows/actions.lock, which Dependabot
-# updates together) get proposed daily, landed
-# unattended by .github/workflows/dependabot-auto-merge.yml once CI is
-# green (see that file for how its scheduled sweep decides what to merge).
+# Managed by _agent-guidance's templates/dependabot/; overwritten on drift, so
+# change the template, not this copy. Why the groups and the ignore:
+# https://github.com/Adam-S-Daniel/_agent-guidance/blob/main/docs/reference/dependabot-grouping.md
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: daily
-    # GROUPING — one daily run opens ONE PR for every third-party action
-    # bump instead of sibling PRs that land in the same run and often edit
-    # the same workflow files: once one sibling merges, the others fall
-    # behind and need a rebase before they can land. Our own actions
-    # (Adam-S-Daniel/*, jodidaniel/*) are excluded because they already skip
-    # the 7-day cooldown below (see that key's `exclude`) and arrive as soon
-    # as they are released; grouping them with the third-party batch would
-    # hold them to its slower, cooled-down cadence, so each gets its own PR.
-    groups:
-      github-actions:
-        patterns: ["*"]
-        exclude-patterns: ["Adam-S-Daniel/*", "jodidaniel/*"]
-    # MINIMUM PACKAGE AGE ("cooldown") — how long a release must exist before
-    # Dependabot will even OPEN the PR. Version updates ONLY: security
-    # updates bypass cooldown by GitHub's spec, so an advisory still opens
-    # (and auto-merges) immediately. GitHub's own default is an implicit
-    # 3-day minimum age, so `default-days: 7` here is a deliberate RAISE, not
-    # a floor from zero — it mechanises this account's standing 7-day
-    # cooling-off convention for third-party action releases (pinned through
-    # .github/workflows/actions.lock per _agent-guidance ADR 0024), matching
-    # cms-platform's own .github/dependabot.yml.
-    #
-    # NO semver-major-days (and no semver-minor-days / semver-patch-days
-    # either): GitHub's Dependabot options reference supports only
-    # `default-days` for the github-actions ecosystem, not per-SemVer-tier
-    # cooldown. Every actions bump, majors included, waits the flat 7 days
-    # above. Adding any `semver-*-days` key here is a schema validation
-    # error, not a key Dependabot quietly ignores: GitHub rejects the file
-    # and no update runs. This file shipped with `semver-major-days: 30` on
-    # 2026-08-10. GitHub's `dependabot` check on that commit failed with "The
-    # property '#/updates/0/cooldown/semver-major-days' is not supported for
-    # the package ecosystem 'github-actions'"
-    # (https://github.com/Adam-S-Daniel/fastmail-actions/runs/93574173055), and
-    # no update job ran until the key was removed
-    # (https://github.com/Adam-S-Daniel/claude-memory-map/issues/31). That
-    # check runs only once the file is on main, so a PR never shows it
-    # (https://github.com/Adam-S-Daniel/cms-platform/issues/429).
-    # dependabot/dependabot-core#14628 is the open upstream request to add
-    # the support.
     cooldown:
       default-days: 7
-      # Our own actions skip the 7-day wait above. That cooling-off guards
-      # against a bad third-party release; an Adam-S-Daniel or jodidaniel
-      # action is this account's own code, gated by its own required checks
-      # before a tag exists. `Adam-S-Daniel/*` also covers the cms-platform
-      # reusable workflows, so it replaces the narrower
-      # `Adam-S-Daniel/cms-platform/*` entry that
-      # https://github.com/Adam-S-Daniel/cms-platform/issues/424 added.
+      # Own actions skip the cooldown, so they stay out of the cooled-down group.
       exclude: ["Adam-S-Daniel/*", "jodidaniel/*"]
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        exclude-patterns: ["Adam-S-Daniel/*", "jodidaniel/*"]
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+  # The synced agent-checks dependency; _agent-guidance updates the source copy.
+  - package-ecosystem: npm
+    directory: "/.githooks/dated-phrasing"
+    schedule:
+      interval: weekly
+    # Holds back security updates too, so the synced package-lock.json copies
+    # do not each get a PR that the sync then overwrites.
+    ignore:
+      - dependency-name: "*"
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
