@@ -64,6 +64,26 @@
 # from the check run's annotations.
 set -u
 
+# ── Lint tool pins (see "Lint pass") ─────────────────────────────────────────
+# Release binaries CI installs when a tool is not on PATH, each by exact version
+# and the sha256 of its archive, verified with `sha256sum -c`. Source of every
+# digest: the release's own assets (gh release view <tag> -R <repo> --json
+# assets), recomputed from a download. Versions are the newest release past 7
+# days when pinned. AGENT_CHECKS_LINT_TEST_SHA256 replaces the digest for the
+# tests, which serve their own archive; AGENT_CHECKS_LINT_FETCH replaces curl.
+LINT_SHELLCHECK_VERSION=0.11.0    # koalaman/shellcheck, released 2025-08-04
+LINT_SHELLCHECK_SHA256_X86_64=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+LINT_SHELLCHECK_SHA256_AARCH64=68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc
+LINT_ACTIONLINT_VERSION=1.7.12    # rhysd/actionlint, released 2026-03-30
+LINT_ACTIONLINT_SHA256_AMD64=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+LINT_ACTIONLINT_SHA256_ARM64=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+LINT_RUFF_VERSION=0.17.5          # astral-sh/ruff, released 2026-11-12
+LINT_RUFF_SHA256_X86_64=7d261fc981a784668e19e9fa6ad437bfd95b67f2dc263fc1eab87d54d72fcc90
+LINT_RUFF_SHA256_AARCH64=4d959d4322a8cd3effe11e9fc6743da1dbb41cd0b2476e433b6e6bfd9a69b626
+# PSScriptAnalyzer is a PowerShell Gallery module (no archive digest to pin):
+# installed by exact version, in CI only, and only when pwsh exists.
+LINT_PSSA_VERSION=1.25.0          # released 2026-03-20
+
 failed=0
 # The ids of the checks that ran and of those that refused, space-separated,
 # each once, in order. An id is a fixed kebab-case literal.
@@ -765,6 +785,751 @@ JS
   problem pr-tldr "$msg"
 }
 
+# ── Lint pass: lint-required-<language> refusals and advisory warnings ───────
+# One pass over the files the event already considers changed (pre-commit: the
+# staged files; pre-push and ci: the files in the range; tree: every path),
+# dispatched by file type and never by repo config, so it works in every repo
+# with no setup (_agent-guidance ADR 0050, which delivers ADR 0049: code
+# quality comes from managed linters, not CodeQL).
+#
+#   shell: *.sh, *.bash, .githooks/*, extensionless with a sh-family shebang,
+#     checked by shellcheck
+#   python: *.py, checked by ruff
+#   workflows: .github/workflows/*.yml|yaml, checked by actionlint
+#   powershell: *.ps1 *.psm1 *.psd1, checked by PSScriptAnalyzer through pwsh
+#   javascript: *.js *.mjs *.cjs, node --check (syntax only)
+#   ruby: *.rb, ruby -wc (syntax only)
+#
+# Two tiers. REQUIRED refuses, as lint-required-<language>, over the WHOLE
+# changed file (an error anywhere in a file you touch is a bug): shellcheck
+# errors, ruff E9/F63/F7/F82 (syntax errors, undefined names, invalid
+# comparisons; not unused imports), actionlint errors (its runner-label kind is
+# advisory: a repo's own runner labels are not knowable here), PSScriptAnalyzer
+# Error and ParseError, and a failing node --check or ruby -c. ADVISORY prints
+# `agent-checks (warning):` lines (`::warning file=,line=` in CI) and never
+# changes the exit status: shellcheck at its default severity, ruff F/B/PLE/PLW,
+# W605 and the bug-shaped E7xx (no pure style: no UP, SIM or formatting),
+# PSScriptAnalyzer Warning, and actionlint's embedded shellcheck. In pre-commit, pre-push and ci only findings on CHANGED lines are
+# shown (the diff hunks), so existing code is burned down gradually, never made
+# a wall; tree shows all. At most 20 findings per file are printed, then a count.
+#
+# A repo's own config wins: shellcheck reads .shellcheckrc, ruff reads
+# ruff.toml, .ruff.toml or pyproject.toml [tool.ruff] (the advisory tier then
+# uses the repo's rule selection; the required select list is still applied
+# and the repo's exclude list respected), actionlint reads .github/actionlint.yaml,
+# PSScriptAnalyzer gets PSScriptAnalyzerSettings.psd1 from the repo root as
+# -Settings. They are read from the content being checked.
+#
+# Opt out in .agent-checks/lint.conf (committed; the sync never touches it),
+# lines of `key=value`, `#` comments, parsed as data (never sourced or eval'd):
+#   required=off        no refusals from this pass     advisory=off   no warnings
+#   python=off          both tiers for one language    python.advisory=off  one tier
+#   exclude=docs/*/snippets/*    a path glob to leave out (repeatable; letters,
+#                                digits and _ . / * ? - only; * also crosses /)
+# Languages: shell python workflow powershell javascript ruby. Values: on, off.
+# AGENT_CHECKS_LINT=off (or `required`/`advisory`: only that tier) does the same
+# for one run. Unknown lines print one warning and are ignored.
+#
+# Tools. Locally a tool that is not on PATH skips its language with one notice
+# and never refuses or touches the network. In CI (GITHUB_ACTIONS=true) a
+# missing shellcheck, actionlint or ruff is downloaded as its release binary at
+# the version and sha256 pinned at the top of this file, checked with
+# `sha256sum -c`, into a temp directory; a failed download or a digest mismatch
+# REFUSES (lint-tool-install), because CI is the enforcement. PSScriptAnalyzer
+# is installed pinned with Install-PSResource in CI only when pwsh exists. A
+# pwsh, node or ruby that is missing is a notice, never a refusal. The tools
+# read a copy of the content being checked in a temp directory, never the
+# worktree, and file names are passed after `--`.
+#
+# Bump a pin by replacing the version and digests together, after the release
+# is 7 days old (gh release view <tag> -R <repo> --json assets lists digests).
+lint_conf=.agent-checks/lint.conf
+lint_tried=""
+lint_notified=""
+lint_cfg=""
+lint_excl=""
+lint_mode=changed
+lint_diff=()
+lint_root=""
+lint_tree=""
+lint_meta=""
+lint_rc=0
+lint_installed=""
+lint_cap=20
+
+# lint_gh_data <text> — a GitHub workflow-command message, escaped.
+lint_gh_data() {
+  local s=$1
+  s=${s//'%'/%25}
+  s=${s//$'\r'/%0D}
+  s=${s//$'\n'/%0A}
+  printf '%s' "$s"
+}
+
+# lint_gh_prop <text> — a workflow-command property value, escaped.
+lint_gh_prop() {
+  local s
+  s=$(lint_gh_data "$1")
+  s=${s//':'/%3A}
+  s=${s//','/%2C}
+  printf '%s' "$s"
+}
+
+# lint_warn <message> — one notice or warning, never a refusal.
+lint_warn() {
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    printf '::warning title=agent-checks lint::%s\n' "$(lint_gh_data "$1")" >&2
+  else
+    printf 'agent-checks (warning): %s\n' "$1" >&2
+  fi
+}
+
+# lint_notice_once <key> <message> — lint_warn, once per run for a key.
+lint_notice_once() {
+  case " $lint_notified " in *" $1 "*) return 0 ;; esac
+  lint_notified="$lint_notified $1"
+  lint_warn "$2"
+}
+
+# lint_cfg_get <key> — the last value set for a key in lint.conf, or nothing.
+lint_cfg_get() {
+  local w v=""
+  for w in $lint_cfg; do
+    case "$w" in "$1="*) v=${w#*=} ;; esac
+  done
+  printf '%s' "$v"
+}
+
+# lint_conf_load — read .agent-checks/lint.conf from the content being checked.
+lint_conf_load() {
+  local text line key val base tier n=0 ok
+  lint_cfg=""
+  lint_excl=""
+  text=$(file_content "$lint_conf")
+  [ -n "$text" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    line=${line%%'#'*}
+    line=${line//[[:space:]]/}
+    [ -n "$line" ] || continue
+    ok=false
+    case "$line" in
+      exclude=*)
+        val=${line#*=}
+        case "$val" in
+          ''|*[!A-Za-z0-9_./*?-]*) ;;
+          *) ok=true; lint_excl="$lint_excl$val"$'\n' ;;
+        esac
+        if $ok; then continue; fi ;;
+      *=*)
+        key=${line%%=*}
+        val=${line#*=}
+        base=${key%%.*}
+        tier=""
+        case "$key" in *.*) tier=${key#*.} ;; esac
+        case "$val" in on|off)
+          case "$base" in
+            required|advisory) [ -z "$tier" ] && ok=true ;;
+            shell|python|workflow|powershell|javascript|ruby)
+              case "$tier" in ''|required|advisory) ok=true ;; esac ;;
+          esac ;;
+        esac ;;
+    esac
+    if $ok; then
+      lint_cfg="$lint_cfg $key=$val"
+    else
+      lint_warn "$lint_conf line $n is not 'key=value' with a known key (required, advisory, shell, python, workflow, powershell, javascript, ruby, optionally .required or .advisory) and on or off, so it was ignored."
+    fi
+  done <<< "$text"
+}
+
+# lint_on <language> <tier> — succeeds when the tier is enabled for the language.
+lint_on() {
+  local v k
+  case "${AGENT_CHECKS_LINT:-}" in
+    off) return 1 ;;
+    required) [ "$2" = required ] || return 1 ;;
+    advisory) [ "$2" = advisory ] || return 1 ;;
+  esac
+  for k in "$1.$2" "$1" "$2"; do
+    v=$(lint_cfg_get "$k")
+    if [ -n "$v" ]; then [ "$v" = on ]; return; fi
+  done
+  return 0
+}
+
+# lint_arch — the pinned binaries' architecture name on Linux, else nothing.
+lint_arch() {
+  case "$(uname -s 2> /dev/null)/$(uname -m 2> /dev/null)" in
+    Linux/x86_64|Linux/amd64) echo x86_64 ;;
+    Linux/aarch64|Linux/arm64) echo aarch64 ;;
+  esac
+}
+
+# lint_pin <tool> — set lint_pin_url, lint_pin_sha and lint_pin_member for the
+# tool's release archive on this platform; fail when there is none.
+lint_pin() {
+  local a v
+  a=$(lint_arch)
+  lint_pin_url="" lint_pin_sha="" lint_pin_member=""
+  case "$1/$a" in
+    shellcheck/x86_64) v=$LINT_SHELLCHECK_VERSION; lint_pin_sha=$LINT_SHELLCHECK_SHA256_X86_64
+      lint_pin_url=https://github.com/koalaman/shellcheck/releases/download/v$v/shellcheck-v$v.linux.x86_64.tar.gz ;;
+    shellcheck/aarch64) v=$LINT_SHELLCHECK_VERSION; lint_pin_sha=$LINT_SHELLCHECK_SHA256_AARCH64
+      lint_pin_url=https://github.com/koalaman/shellcheck/releases/download/v$v/shellcheck-v$v.linux.aarch64.tar.gz ;;
+    actionlint/x86_64) v=$LINT_ACTIONLINT_VERSION; lint_pin_sha=$LINT_ACTIONLINT_SHA256_AMD64
+      lint_pin_url=https://github.com/rhysd/actionlint/releases/download/v$v/actionlint_${v}_linux_amd64.tar.gz ;;
+    actionlint/aarch64) v=$LINT_ACTIONLINT_VERSION; lint_pin_sha=$LINT_ACTIONLINT_SHA256_ARM64
+      lint_pin_url=https://github.com/rhysd/actionlint/releases/download/v$v/actionlint_${v}_linux_arm64.tar.gz ;;
+    ruff/x86_64) v=$LINT_RUFF_VERSION; lint_pin_sha=$LINT_RUFF_SHA256_X86_64
+      lint_pin_url=https://github.com/astral-sh/ruff/releases/download/$v/ruff-x86_64-unknown-linux-gnu.tar.gz ;;
+    ruff/aarch64) v=$LINT_RUFF_VERSION; lint_pin_sha=$LINT_RUFF_SHA256_AARCH64
+      lint_pin_url=https://github.com/astral-sh/ruff/releases/download/$v/ruff-aarch64-unknown-linux-gnu.tar.gz ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    shellcheck) lint_pin_member=shellcheck-v$v/shellcheck ;;
+    actionlint) lint_pin_member=actionlint ;;
+    ruff) lint_pin_member=ruff-$(lint_arch)-unknown-linux-gnu/ruff ;;
+  esac
+  # A test supplies its own archive and digest; the real pins cannot match one.
+  [ -z "${AGENT_CHECKS_LINT_TEST_SHA256:-}" ] || lint_pin_sha=$AGENT_CHECKS_LINT_TEST_SHA256
+  return 0
+}
+
+# lint_fetch <url> <dest> — download. AGENT_CHECKS_LINT_FETCH names a command
+# to run as `<command> <url> <dest>` instead of curl (the tests set it).
+lint_fetch() {
+  if [ -n "${AGENT_CHECKS_LINT_FETCH:-}" ]; then
+    "$AGENT_CHECKS_LINT_FETCH" "$1" "$2"
+  else
+    curl --fail --silent --show-error --location --retry 2 --proto '=https' --output "$2" -- "$1"
+  fi
+}
+
+# lint_sha256_ok <file> <digest> — the file's sha256 equals the digest.
+lint_sha256_ok() {
+  if command -v sha256sum > /dev/null 2>&1; then
+    printf '%s  %s\n' "$2" "$1" | sha256sum -c --quiet - > /dev/null 2>&1
+  else
+    printf '%s  %s\n' "$2" "$1" | shasum -a 256 -c --quiet - > /dev/null 2>&1
+  fi
+}
+
+# lint_install <tool> — CI only: install the pinned release binary into the
+# pass's temp directory and set lint_installed to its path. A failure refuses.
+lint_install() {
+  local t=$1 dir archive
+  lint_installed=""
+  if ! lint_pin "$t"; then
+    problem lint-tool-install "$t is not on PATH and no pinned release binary exists for this platform ($(uname -s 2> /dev/null) $(uname -m 2> /dev/null)), so its files were not linted. Install $t on the runner (every GitHub-hosted ubuntu runner can), or turn the language off in $lint_conf."
+    return 1
+  fi
+  dir=$lint_root/bin/$t
+  archive=$dir.tar.gz
+  mkdir -p -- "$dir" "$lint_root/bin"
+  if ! lint_fetch "$lint_pin_url" "$archive" > /dev/null 2>&1; then
+    problem lint-tool-install "$t could not be downloaded from $lint_pin_url (offline, or GitHub unavailable), so its files were not linted. CI lints with a pinned copy and fails closed; re-run the job."
+    return 1
+  fi
+  if ! lint_sha256_ok "$archive" "$lint_pin_sha"; then
+    problem lint-tool-install "the $t download from $lint_pin_url did not match its pinned sha256 ($lint_pin_sha), so it was discarded and not run. Re-run the job; if it keeps failing the release was re-published or tampered with: review it, then bump the pin in .githooks/agent-checks's source, _agent-guidance templates/agent-checks/agent-checks."
+    rm -f -- "$archive"
+    return 1
+  fi
+  if ! tar -xzf "$archive" -C "$dir" -- "$lint_pin_member" > /dev/null 2>&1 || [ ! -f "$dir/$lint_pin_member" ]; then
+    problem lint-tool-install "the verified $t archive did not contain $lint_pin_member, so its files were not linted. Re-run the job."
+    return 1
+  fi
+  chmod +x -- "$dir/$lint_pin_member"
+  lint_installed=$dir/$lint_pin_member
+}
+
+# lint_need <tool> — find (or, in CI, install) the tool. Sets lint_bin_<tool>;
+# a tool that cannot be had gives one notice and fails.
+lint_need() {
+  local t=$1 var=lint_bin_$1 p
+  p=${!var:-}
+  [ -z "$p" ] || return 0
+  case " $lint_tried " in *" $t "*) return 1 ;; esac
+  lint_tried="$lint_tried $t"
+  p=$(command -v "$t" 2> /dev/null) || p=""
+  if [ -z "$p" ] && [ "${GITHUB_ACTIONS:-}" = true ]; then
+    case "$t" in shellcheck|actionlint|ruff) lint_install "$t" || return 1; p=$lint_installed ;; esac
+  fi
+  if [ -z "$p" ]; then
+    lint_notice_once "$t" "lint skipped: $t is not on PATH, so its files were not linted. Install it to get these checks locally; CI runs them (it installs a pinned copy of shellcheck, actionlint and ruff)."
+    return 1
+  fi
+  printf -v "$var" '%s' "$p"
+}
+
+# lint_pssa_ready — pwsh has PSScriptAnalyzer (installed pinned in CI).
+lint_pssa_ready() {
+  local probe="if (Get-Module -ListAvailable -Name PSScriptAnalyzer) { exit 0 } else { exit 3 }" cmd
+  lint_need pwsh || return 1
+  "$lint_bin_pwsh" -NoProfile -NonInteractive -Command "$probe" > /dev/null 2>&1 && return 0
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    cmd="\$ErrorActionPreference = 'Stop'; if (Get-Command Install-PSResource -ErrorAction SilentlyContinue) { Install-PSResource -Name PSScriptAnalyzer -Version '$LINT_PSSA_VERSION' -Scope CurrentUser -TrustRepository -Quiet } else { Install-Module -Name PSScriptAnalyzer -RequiredVersion '$LINT_PSSA_VERSION' -Scope CurrentUser -Force }"
+    if "$lint_bin_pwsh" -NoProfile -NonInteractive -Command "$cmd" > /dev/null 2>&1 \
+       && "$lint_bin_pwsh" -NoProfile -NonInteractive -Command "$probe" > /dev/null 2>&1; then
+      return 0
+    fi
+    problem lint-tool-install "PSScriptAnalyzer $LINT_PSSA_VERSION could not be installed with pwsh (offline, or PowerShell Gallery unavailable), so PowerShell files were not linted. CI fails closed; re-run the job."
+    return 1
+  fi
+  lint_notice_once PSScriptAnalyzer "lint skipped: the PSScriptAnalyzer module is not installed for pwsh, so PowerShell files were not linted. Install-PSResource PSScriptAnalyzer to get these checks locally; CI installs a pinned copy."
+  return 1
+}
+
+# lint_skip_path <path> — vendored, generated, fixture and fragment (partial
+# source extracted from a test) paths are not linted; a repo adds more with
+# exclude= in lint.conf.
+lint_skip_path() {
+  local g
+  case "$1" in
+    node_modules/*|*/node_modules/*|vendor/*|*/vendor/*|third_party/*|*/third_party/*) return 0 ;;
+    fixtures/*|*/fixtures/*|testdata/*|*/testdata/*|*/__snapshots__/*|fragments/*|*/fragments/*|evals/*/seed/*) return 0 ;;
+    *.min.js|*.min.mjs) return 0 ;;
+    *$'\n'*|*$'\t'*) return 0 ;;
+  esac
+  case "/$1/" in */../*) return 0 ;; esac
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    # A glob matched with case, never eval'd; its charset was checked on load.
+    # shellcheck disable=SC2254
+    case "$1" in $g) return 0 ;; esac
+  done <<< "$lint_excl"
+  return 1
+}
+
+# lint_lang_of <path> — print the language a path is linted as: shell, python,
+# workflow, powershell, javascript, ruby, or shell-maybe (an extensionless
+# file whose first line decides). Prints nothing for the rest.
+lint_lang_of() {
+  local base=${1##*/}
+  case "$1" in
+    .github/workflows/*/*) return 0 ;;
+    .github/workflows/*.yml|.github/workflows/*.yaml) echo workflow; return 0 ;;
+    .githooks/*/*) return 0 ;;
+    .githooks/*)
+      case "$base" in
+        *.sh|*.bash) echo shell ;;
+        *.*) ;;
+        *) echo shell ;;
+      esac
+      return 0 ;;
+  esac
+  case "$base" in
+    *.sh|*.bash) echo shell ;;
+    *.py) echo python ;;
+    *.ps1|*.psm1|*.psd1) echo powershell ;;
+    *.js|*.mjs|*.cjs) echo javascript ;;
+    *.rb) echo ruby ;;
+    .*|*.*) ;;
+    LICENSE|COPYING|Makefile|GNUmakefile|Dockerfile|Gemfile|Rakefile|Procfile|CODEOWNERS|README|NOTICE|AUTHORS|CHANGELOG|VERSION|Brewfile|Vagrantfile|Jenkinsfile) ;;
+    *) echo shell-maybe ;;
+  esac
+}
+
+# lint_stage <path> — copy the blob being checked into the temp tree; fail when
+# it has none, or is over 1 MiB (generated or data).
+lint_stage() {
+  local spec dest size
+  if [ "$content_rev" = index ]; then spec=":$1"; else spec="$content_rev:$1"; fi
+  git cat-file -e "$spec" 2> /dev/null || return 1
+  size=$(git cat-file -s "$spec" 2> /dev/null) || return 1
+  [ "${size:-2097152}" -le 1048576 ] || return 1
+  dest=$lint_tree/$1
+  mkdir -p -- "${dest%/*}" && git cat-file blob "$spec" > "$dest" 2> /dev/null
+}
+
+# lint_stage_cfg <path> <name>... — copy each named config file from the
+# path's own directory and every directory above it, when the content has it.
+lint_stage_cfg() {
+  local d=$1 n p
+  shift
+  while :; do
+    case "$d" in */*) d=${d%/*} ;; *) d="" ;; esac
+    for n in "$@"; do
+      p=${d:+$d/}$n
+      case $'\n'"$lint_seen" in *$'\n'"$p"$'\n'*) continue ;; esac
+      lint_seen="$lint_seen$p"$'\n'
+      lint_stage "$p" || true
+    done
+    [ -n "$d" ] || break
+  done
+}
+lint_seen=""
+
+# lint_shebang_kind <file> — sh (a sh-family shebang), none, or other.
+lint_shebang_kind() {
+  local first w
+  IFS= read -r first < "$1" || true
+  case "$first" in '#!'*) ;; *) echo none; return 0 ;; esac
+  first=${first#'#!'}
+  set -f
+  # shellcheck disable=SC2086
+  set -- $first
+  set +f
+  w=${1:-}
+  case "$w" in */env) shift; while [ "${1:-}" != "" ]; do case "$1" in -*|*=*) shift ;; *) break ;; esac; done; w=${1:-} ;; esac
+  case "${w##*/}" in bash|sh|dash|ksh|ash) echo sh ;; *) echo other ;; esac
+}
+
+# lint_ruff_has_config <path> — the nearest ruff config above a python file is
+# a ruff.toml, .ruff.toml or a pyproject.toml with a [tool.ruff] table.
+lint_ruff_has_config() {
+  local d=$1 n
+  while :; do
+    case "$d" in */*) d=${d%/*} ;; *) d="" ;; esac
+    for n in ruff.toml .ruff.toml; do
+      [ -f "$lint_tree/${d:+$d/}$n" ] && return 0
+    done
+    if [ -f "$lint_tree/${d:+$d/}pyproject.toml" ] \
+       && grep -Eq '^\[tool\.ruff[].]' "$lint_tree/${d:+$d/}pyproject.toml"; then
+      return 0
+    fi
+    [ -n "$d" ] || break
+  done
+  return 1
+}
+
+# lint_ranges <path> — append the path's changed line ranges, as
+# `path<TAB>start<TAB>end` lines, to the ranges file.
+lint_ranges() {
+  local h s c
+  while IFS= read -r h; do
+    [[ $h =~ ^@@\ -[0-9]+(,[0-9]+)?\ \+([0-9]+)(,([0-9]+))?\ @@ ]] || continue
+    s=${BASH_REMATCH[2]}
+    c=${BASH_REMATCH[4]:-1}
+    [ "$c" -gt 0 ] || continue
+    printf '%s\t%s\t%s\n' "$1" "$s" $((s + c - 1))
+  done < <(git diff -U0 --no-color --no-ext-diff --no-textconv ${lint_diff[@]+"${lint_diff[@]}"} -- ":(literal)$1" 2> /dev/null | grep '^@@') >> "$lint_meta/ranges"
+}
+
+# lint_filter <changed|all> — read findings (`path<TAB>line<TAB>text`) on stdin;
+# print those on changed lines (all, in tree mode), at most lint_cap per file,
+# then one `path<TAB>0<TAB>N more...` line for the rest.
+lint_filter() {
+  awk -F'\t' -v mode="$1" -v rfile="$lint_meta/ranges" -v cap="$lint_cap" '
+    BEGIN {
+      if (mode == "changed") {
+        while ((getline l < rfile) > 0) {
+          split(l, a, "\t"); n = ++cnt[a[1]]; s[a[1], n] = a[2] + 0; e[a[1], n] = a[3] + 0
+        }
+      }
+    }
+    {
+      if (mode == "changed") {
+        ok = 0
+        for (i = 1; i <= cnt[$1]; i++) if (($2 + 0) >= s[$1, i] && ($2 + 0) <= e[$1, i]) { ok = 1; break }
+        if (!ok) next
+      }
+      if (++seen[$1] <= cap) print; else more[$1]++
+    }
+    END { for (p in more) printf "%s\t0\t%d more findings in this file are not shown\n", p, more[p] }
+  '
+}
+
+# lint_norm_gcc <file> — `path:line:col: text` lines as `path<TAB>line<TAB>text`.
+lint_norm_gcc() {
+  local line t re='^(.*):([0-9]+):([0-9]+): (.*)$'
+  while IFS= read -r line; do
+    [[ $line =~ $re ]] || continue
+    t=${BASH_REMATCH[4]//$'\t'/ }
+    printf '%s\t%s\t%s\n' "${BASH_REMATCH[1]#./}" "${BASH_REMATCH[2]}" "${t:0:300}"
+  done < <(LC_ALL=C tr -d '\000-\010\013-\037\177' < "$1")
+}
+
+# lint_refuse <language> <message> — refuse under the language's check id (each
+# id is a literal, so the run log and the id check can read it).
+lint_refuse() {
+  case "$1" in
+    shell) problem lint-required-shell "$2" ;;
+    python) problem lint-required-python "$2" ;;
+    workflow) problem lint-required-workflow "$2" ;;
+    powershell) problem lint-required-powershell "$2" ;;
+    javascript) problem lint-required-javascript "$2" ;;
+    ruby) problem lint-required-ruby "$2" ;;
+  esac
+}
+
+# lint_report <language> <tool> <hint> <required-file> <advisory-file> — emit
+# the two tiers' normalized findings.
+lint_report() {
+  local lang=$1 tool=$2 hint=$3 path line text
+  if lint_on "$lang" required; then
+    note_ran "lint-required-$lang"
+    while IFS=$'\t' read -r path line text; do
+      [ -n "$path" ] || continue
+      text=${text%.}
+      if [ "$line" = 0 ]; then
+        lint_refuse "$lang" "$path: $text. $hint"
+      else
+        lint_refuse "$lang" "$path:$line: $tool: $text. $hint"
+      fi
+    done < <(lint_filter all < "$4")
+  fi
+  if lint_on "$lang" advisory; then
+    while IFS=$'\t' read -r path line text; do
+      [ -n "$path" ] || continue
+      text=${text%.}
+      if [ "$line" = 0 ]; then
+        lint_warn "$path: $text."
+      elif [ "${GITHUB_ACTIONS:-}" = true ]; then
+        printf '::warning file=%s,line=%s,title=agent-checks lint %s::%s\n' \
+          "$(lint_gh_prop "$path")" "$line" "$tool" "$(lint_gh_data "$text")" >&2
+      else
+        printf 'agent-checks (warning): %s:%s: %s: %s\n' "$path" "$line" "$tool" "$text" >&2
+      fi
+    done < <(lint_filter "$lint_mode" < "$5")
+  fi
+}
+
+# lint_chunks <list> <out> <command...> — run the command over the list's files
+# (NUL-separated, relative to the temp tree), 100 at a time, after `--`; append
+# stdout to <out>; set lint_rc to the highest exit status.
+lint_chunks() {
+  local list=$1 out=$2 f r
+  local -a chunk=()
+  shift 2
+  lint_rc=0
+  : > "$out"
+  while IFS= read -r -d '' f; do
+    chunk[${#chunk[@]}]=$f
+    if [ "${#chunk[@]}" -ge 100 ]; then
+      r=0
+      (cd "$lint_tree" && "$@" -- "${chunk[@]}") >> "$out" 2> /dev/null || r=$?
+      [ "$r" -le "$lint_rc" ] || lint_rc=$r
+      chunk=()
+    fi
+  done < "$list"
+  if [ "${#chunk[@]}" -gt 0 ]; then
+    r=0
+    (cd "$lint_tree" && "$@" -- "${chunk[@]}") >> "$out" 2> /dev/null || r=$?
+    [ "$r" -le "$lint_rc" ] || lint_rc=$r
+  fi
+}
+
+# lint_split_sev <norm> <required-out> <advisory-out> — shellcheck-style text
+# `error: ...` goes to the required file (prefix dropped), the rest to advisory.
+lint_split_sev() {
+  awk -F'\t' -v OFS='\t' -v req="$2" -v adv="$3" '
+    $3 ~ /^error: / { sub(/^error: /, "", $3); print > req; next }
+    { print > adv }
+  ' "$1"
+  [ -f "$2" ] || : > "$2"
+  [ -f "$3" ] || : > "$3"
+}
+
+lint_run_shell() {
+  local kind list out="$lint_meta/sh.out" norm="$lint_meta/sh.norm"
+  : > "$norm"
+  lint_need shellcheck || return 0
+  for kind in shell shell-bash; do
+    list=$lint_meta/lists/$kind
+    [ -s "$list" ] || continue
+    if [ "$kind" = shell-bash ]; then
+      lint_chunks "$list" "$out" "$lint_bin_shellcheck" -f gcc --severity=style -e SC1090,SC1091 -s bash
+    else
+      lint_chunks "$list" "$out" "$lint_bin_shellcheck" -f gcc --severity=style -e SC1090,SC1091
+    fi
+    if [ "$lint_rc" -ge 3 ]; then
+      lint_warn "lint: shellcheck stopped with exit $lint_rc, so some shell files were not linted."
+    fi
+    lint_norm_gcc "$out" >> "$norm"
+  done
+  lint_split_sev "$norm" "$lint_meta/sh.req" "$lint_meta/sh.adv"
+  lint_report shell shellcheck "Fix it, or for a false positive add '# shellcheck disable=SCnnnn' with the reason. Check with: shellcheck <file>" "$lint_meta/sh.req" "$lint_meta/sh.adv"
+}
+
+lint_ruff_codes_required() {   # stdin: normalized; stdout: those NOT in the required set
+  awk -F'\t' '$3 !~ /^(E9|F63|F7|F82|invalid-syntax)/'
+}
+
+lint_run_python() {
+  local out="$lint_meta/py.out" req="$lint_meta/py.req" adv="$lint_meta/py.adv" all="$lint_meta/lists/python" cfg="$lint_meta/lists/python-cfg"
+  lint_need ruff || return 0
+  # The required run applies to every python file; --select on the command
+  # line replaces the repo's own selection, and --force-exclude keeps its
+  # exclude list.
+  cat "$lint_meta/lists/python" "$lint_meta/lists/python-cfg" > "$lint_meta/py.all" 2> /dev/null
+  lint_chunks "$lint_meta/py.all" "$out" "$lint_bin_ruff" check --no-cache --force-exclude --select E9,F63,F7,F82 --output-format=concise
+  if [ "$lint_rc" -ge 2 ]; then
+    lint_warn "lint: ruff stopped with exit $lint_rc (a bad ruff config in the repo?), so Python files were not linted."
+    : > "$req"; : > "$adv"
+    return 0
+  fi
+  lint_norm_gcc_ruff "$out" > "$req"
+  : > "$adv"
+  if lint_on python advisory; then
+    if [ -s "$all" ]; then
+      lint_chunks "$all" "$out" "$lint_bin_ruff" check --no-cache --force-exclude --output-format=concise \
+        --select F,B,PLE,PLW,W605,E711,E712,E713,E714,E721,E722,E9 --ignore B905,PLW0603,PLW2901
+      [ "$lint_rc" -lt 2 ] && lint_norm_gcc_ruff "$out" | lint_ruff_codes_required >> "$adv"
+    fi
+    if [ -s "$cfg" ]; then
+      lint_chunks "$cfg" "$out" "$lint_bin_ruff" check --no-cache --force-exclude --output-format=concise
+      [ "$lint_rc" -lt 2 ] && lint_norm_gcc_ruff "$out" | lint_ruff_codes_required >> "$adv"
+    fi
+  fi
+  lint_report python ruff "Fix it, or ignore a false positive with '# noqa: <code>' and the reason. Check with: ruff check --select E9,F63,F7,F82 <file>" "$req" "$adv"
+}
+
+# lint_norm_gcc_ruff <file> — ruff's concise lines; its trailer lines never match.
+lint_norm_gcc_ruff() { lint_norm_gcc "$1"; }
+
+lint_run_workflow() {
+  local list=$lint_meta/lists/workflow out="$lint_meta/al.out" req="$lint_meta/al.req" adv="$lint_meta/al.adv" sc=""
+  lint_need actionlint || return 0
+  lint_chunks "$list" "$out" "$lint_bin_actionlint" -oneline -shellcheck= -pyflakes=
+  if [ "$lint_rc" -ge 2 ]; then
+    lint_warn "lint: actionlint stopped with exit $lint_rc, so workflow files were not linted."
+    return 0
+  fi
+  lint_norm_gcc "$out" > "$lint_meta/al.all"
+  # A runner label the repo's own runners define is not knowable here: advisory.
+  grep -v '\[runner-label\]$' "$lint_meta/al.all" > "$req" || true
+  : > "$adv"
+  grep '\[runner-label\]$' "$lint_meta/al.all" >> "$adv" || true
+  if lint_on workflow advisory; then
+    sc=$(command -v shellcheck 2> /dev/null) || sc=${lint_bin_shellcheck:-}
+    if [ -n "$sc" ]; then
+      lint_chunks "$list" "$out" "$lint_bin_actionlint" -oneline -shellcheck "$sc" -pyflakes=
+      if [ "$lint_rc" -lt 2 ]; then
+        lint_norm_gcc "$out" | grep -vxFf "$lint_meta/al.all" >> "$adv" || true
+      fi
+    fi
+  fi
+  lint_report workflow actionlint "Fix it; actionlint's checks are documented at https://github.com/rhysd/actionlint/blob/main/docs/checks.md. Check with: actionlint <file>" "$req" "$adv"
+}
+
+lint_run_powershell() {
+  local list=$lint_meta/lists/powershell script="$lint_meta/pssa.ps1" out="$lint_meta/ps.out" norm="$lint_meta/ps.norm" settings="" rc=0
+  lint_pssa_ready || return 0
+  [ -f "$lint_tree/PSScriptAnalyzerSettings.psd1" ] && settings=./PSScriptAnalyzerSettings.psd1
+  cat > "$script" <<'PS'
+param([string]$List, [string]$Settings)
+$ErrorActionPreference = 'Stop'
+Import-Module PSScriptAnalyzer
+foreach ($f in Get-Content -LiteralPath $List) {
+  $p = @{ Path = $f; Severity = @('Error', 'ParseError', 'Warning') }
+  if ($Settings) { $p.Settings = $Settings }
+  foreach ($r in @(Invoke-ScriptAnalyzer @p)) {
+    '{0}:{1}:{2}: {3}: {4}: {5}' -f $f, $r.Line, $r.Column, $r.Severity, $r.RuleName, ($r.Message -replace '\s+', ' ')
+  }
+}
+PS
+  tr '\0' '\n' < "$list" > "$lint_meta/ps.list"
+  (cd "$lint_tree" && "$lint_bin_pwsh" -NoProfile -NonInteractive -File "$script" -List "$lint_meta/ps.list" -Settings "$settings") > "$out" 2> /dev/null || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    lint_warn "lint: PSScriptAnalyzer stopped with exit $rc, so some PowerShell files were not linted."
+  fi
+  lint_norm_gcc "$out" > "$norm"
+  # Error and ParseError refuse; Warning is advisory.
+  awk -F'\t' -v OFS='\t' -v req="$lint_meta/ps.req" -v adv="$lint_meta/ps.adv" '
+    $3 ~ /^(Error|ParseError): / { sub(/^[A-Za-z]+: /, "", $3); print > req; next }
+    $3 ~ /^Warning: / { sub(/^Warning: /, "", $3); print > adv }
+  ' "$norm"
+  [ -f "$lint_meta/ps.req" ] || : > "$lint_meta/ps.req"
+  [ -f "$lint_meta/ps.adv" ] || : > "$lint_meta/ps.adv"
+  lint_report powershell PSScriptAnalyzer "Fix it, or suppress a false positive with [Diagnostics.CodeAnalysis.SuppressMessageAttribute()] and the reason. Check with: Invoke-ScriptAnalyzer -Severity Error <file>" "$lint_meta/ps.req" "$lint_meta/ps.adv"
+}
+
+# lint_run_syntax <language> <tool> <list> — a syntax-only check, one file at a
+# time: node --check, or ruby -wc. A nonzero exit is the finding.
+lint_run_syntax() {
+  local lang=$1 tool=$2 list=$3 f err msg line rc req="$lint_meta/$1.req"
+  : > "$req"
+  while IFS= read -r -d '' f; do
+    rc=0
+    if [ "$lang" = javascript ]; then
+      err=$(cd "$lint_tree" && "$lint_bin_node" --check "./$f" 2>&1 > /dev/null) || rc=$?
+      msg=$(printf '%s\n' "$err" | grep -m1 -E '^[A-Za-z]*Error')
+    else
+      err=$(cd "$lint_tree" && "$lint_bin_ruby" -wc "./$f" 2>&1 > /dev/null) || rc=$?
+      msg=$(printf '%s\n' "$err" | grep -m1 -E 'rror')
+    fi
+    [ "$rc" -ne 0 ] || continue
+    line=$(printf '%s\n' "$err" | sed -n 's/^[^[:space:]]*:\([0-9][0-9]*\)\(:.*\)\{0,1\}$/\1/p' | head -n 1)
+    [ -n "$line" ] || line=1
+    [ -n "$msg" ] || msg="syntax check failed (exit $rc)"
+    msg=$(printf '%s' "$msg" | LC_ALL=C tr -d '\000-\037\177')
+    printf '%s\t%s\t%s\n' "$f" "$line" "${msg:0:300}" >> "$req"
+  done < "$list"
+  : > "$lint_meta/$lang.adv"
+  lint_report "$lang" "$tool" "Fix the syntax error. Check with: $4" "$req" "$lint_meta/$lang.adv"
+}
+
+# run_lint <list> — the lint pass over a NUL-separated path list.
+run_lint() {
+  local list=$1 path lang kind syms="" any=false l first
+  [ "${AGENT_CHECKS_LINT:-}" = off ] && return 0
+  lint_conf_load
+  lint_root=$(mktemp -d) || { lint_warn "lint skipped: could not create a temp directory."; return 0; }
+  lint_tree=$lint_root/tree
+  lint_meta=$lint_root/meta
+  mkdir -p "$lint_tree" "$lint_meta/lists" "$lint_root/bin"
+  : > "$lint_meta/ranges"
+  lint_seen=""
+  lint_tried=""
+  lint_bin_shellcheck="" lint_bin_ruff="" lint_bin_actionlint="" lint_bin_pwsh="" lint_bin_node="" lint_bin_ruby=""
+  for l in shell shell-bash python python-cfg workflow powershell javascript ruby; do : > "$lint_meta/lists/$l"; done
+  while IFS= read -r -d '' path; do
+    [ -n "$path" ] || continue
+    lang=$(lint_lang_of "$path")
+    [ -n "$lang" ] || continue
+    lint_skip_path "$path" && continue
+    case "$lang" in shell-maybe) l=shell ;; *) l=$lang ;; esac
+    lint_on "$l" required || lint_on "$l" advisory || continue
+    if [ -z "$syms" ]; then
+      syms=$lint_meta/symlinks
+      if [ "$content_rev" = index ]; then git ls-files -s -z; else git ls-tree -r -z "$content_rev"; fi 2> /dev/null \
+        | tr '\0' '\n' | awk -F'\t' '{ split($1, a, " "); if (a[1] == "120000") print $2 }' > "$syms"
+    fi
+    grep -qxF -- "$path" "$syms" && continue
+    lint_stage "$path" || continue
+    kind=$lang
+    case "$lang" in
+      shell|shell-maybe)
+        case "$(lint_shebang_kind "$lint_tree/$path")" in
+          sh) kind=shell ;;
+          none) if [ "$lang" = shell-maybe ]; then continue; else kind=shell-bash; fi ;;
+          *) continue ;;
+        esac
+        lint_stage_cfg "$path" .shellcheckrc ;;
+      python)
+        lint_stage_cfg "$path" ruff.toml .ruff.toml pyproject.toml
+        if lint_ruff_has_config "$path"; then kind=python-cfg; fi ;;
+      workflow) lint_stage_cfg "$path" .github/actionlint.yaml .github/actionlint.yml ;;
+      powershell) lint_stage_cfg "$path" PSScriptAnalyzerSettings.psd1 ;;
+      javascript)
+        # A Jekyll page with front matter is not JavaScript yet.
+        IFS= read -r first < "$lint_tree/$path" || true
+        [ "${first:-}" = "---" ] && continue
+        lint_stage_cfg "$path" package.json ;;
+    esac
+    printf '%s\0' "$path" >> "$lint_meta/lists/$kind"
+    any=true
+    [ "$lint_mode" = changed ] && lint_ranges "$path"
+  done < "$list"
+  if $any; then
+    [ -s "$lint_meta/lists/shell" ] || [ -s "$lint_meta/lists/shell-bash" ] && lint_run_shell
+    [ -s "$lint_meta/lists/python" ] || [ -s "$lint_meta/lists/python-cfg" ] && lint_run_python
+    [ -s "$lint_meta/lists/workflow" ] && lint_run_workflow
+    [ -s "$lint_meta/lists/powershell" ] && lint_run_powershell
+    if [ -s "$lint_meta/lists/javascript" ] && lint_need node; then
+      lint_run_syntax javascript "node --check" "$lint_meta/lists/javascript" "node --check <file>"
+    fi
+    if [ -s "$lint_meta/lists/ruby" ] && lint_need ruby; then
+      lint_run_syntax ruby "ruby -wc" "$lint_meta/lists/ruby" "ruby -wc <file>"
+    fi
+  fi
+  rm -rf "$lint_root"
+  return 0
+}
+
 # run_checks — the fleet checks, then the repo's own, over the same
 # NUL-separated path list on stdin, then the warning pass.
 run_checks() {
@@ -779,6 +1544,7 @@ run_checks() {
   check_paths < "$list"
   check_gha_injection "$list"
   run_local_checks < "$list"
+  run_lint "$list"
   run_dated_phrasing "$list"
   rm -f "$list"
 }
@@ -807,6 +1573,20 @@ is_zero() {
   esac
 }
 
+# lint_set_range <base> <head> — the diff the lint pass reads changed lines
+# from: base...head when base is a commit this clone has, else head against its
+# parent (or the empty tree for a root commit).
+lint_set_range() {
+  local parent
+  if known_commit "$1"; then
+    lint_diff=("$1...$2")
+  elif parent=$(git rev-parse --verify --quiet "$2^" 2> /dev/null); then
+    lint_diff=("$parent" "$2")
+  else
+    lint_diff=("$(git hash-object -t tree /dev/null)" "$2")
+  fi
+}
+
 # Usable as a range base: a real commit this clone has.
 known_commit() {
   [ -n "$1" ] && ! is_zero "$1" && git cat-file -e "$1^{commit}" 2>/dev/null
@@ -816,6 +1596,7 @@ event=${1:-}
 case "$event" in
   pre-commit)
     content_rev=index
+    lint_diff=(--cached)
     run_checks < <(git diff --cached --name-only -z --diff-filter=ACMR)
     ;;
 
@@ -844,8 +1625,13 @@ case "$event" in
       fi
       content_rev=$local_oid
       if known_commit "$remote_oid"; then
+        lint_set_range "$remote_oid" "$local_oid"
         run_checks < <(paths_in_range "$remote_oid..$local_oid")
       else
+        # A new branch: its changed lines start at the parent of its oldest
+        # commit that no remote has.
+        oldest=$(git rev-list "$local_oid" --not --remotes="$remote" 2> /dev/null | tail -n 1)
+        lint_set_range "${oldest:+$oldest^}" "$local_oid"
         run_checks < <(paths_in_range "$local_oid" --not --remotes="$remote")
       fi
     done
@@ -855,6 +1641,7 @@ case "$event" in
     base=${2:-}
     head=${3:-HEAD}
     content_rev=$head
+    lint_set_range "$base" "$head"
     if known_commit "$base"; then
       run_checks < <(paths_in_range "$base..$head")
     else
@@ -869,6 +1656,7 @@ case "$event" in
       problem tree-rev "tree: '$rev' is not a commit or tree in this repository, so nothing was checked. Name a revision that exists (git rev-parse --verify '$rev')."
     else
       content_rev=$rev
+      lint_mode=all
       run_checks < <(git ls-tree -r -z --name-only "$rev")
     fi
     ;;
