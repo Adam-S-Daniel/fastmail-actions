@@ -40,9 +40,11 @@ BeforeDiscovery {
     # reusable-workflow job's `secrets: inherit`. It errs toward "reads one":
     # a false hit only forces a job to be fenced or listed as open.
     function Test-ReadsSecret([string]$Json) {
+        # Context names are case-insensitive in an expression (Secrets.X reads
+        # the secret too); only the exact built-in token name is exempt.
         $rest = $Json -creplace 'secrets\.GITHUB_TOKEN\b', ''
-        return [bool]([regex]::IsMatch($rest, '\bsecrets\s*(\.|\[|\))') -or
-            [regex]::IsMatch($rest, '"secrets"\s*:\s*"inherit"'))
+        return [bool]([regex]::IsMatch($rest, '(?i)\bsecrets\s*(\.|\[|\))') -or
+            [regex]::IsMatch($rest, '(?i)"secrets"\s*:\s*"inherit"'))
     }
 
     $script:SecretJobs = @()
