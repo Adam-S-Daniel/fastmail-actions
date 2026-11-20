@@ -13,3 +13,7 @@ Makefile text eol=lf
 .claude/hooks/*.sh text eol=lf
 # managed by _agent-guidance: the agent-checks runner must stay LF for bash (see ADR 0021)
 .githooks/* text eol=lf
+# managed by _agent-guidance: synced tooling is vendored, not this repo's code (see ADR 0048)
+.githooks/** linguist-vendored
+# managed by _agent-guidance: synced tooling is vendored, not this repo's code (see ADR 0048)
+.claude/hooks/** linguist-vendored
