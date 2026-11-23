@@ -1,13 +1,13 @@
 {
   "registry": "Adam-S-Daniel/adam-agentskills",
-  "ref": "7c01814fbed9eb20608d7f69037b925f4b1a8705",
+  "ref": "eeeb02f27120c0bd40e80ffe9e1d96000bdc3cea",
   "bundles": [
     "adam-anything-anywhere",
     "adam-coding-anywhere"
   ],
   "skills": {
     "adam-anything-anywhere/finding-unknowns": "sha256:de8ba4767b859db1109a6b866de913674f0d876205bd5293a55cdc55600f6a36",
-    "adam-anything-anywhere/writing-adrs": "sha256:88722a1b11d7def8b6927c81e99a2774e9f2748174bf9d7d3116f1091a26b7e3",
+    "adam-anything-anywhere/writing-adrs": "sha256:9dd694d2e39318ec5b3ff763c475a0ea2de3dc4eb1323ca9fdb4bd85fccbdb02",
     "adam-coding-anywhere/ci-job-performance": "sha256:83c331183416eeca814fc5608a93439d29e37d12580e3d32be7330cb3491a48d",
     "adam-coding-anywhere/disarm-inherited-reach": "sha256:0be479e716d574d8b2ef9868ad9a9d8c4b67413b98d5cf0ae331c79efc511ce2",
     "adam-coding-anywhere/fan-out-triage": "sha256:fa2be3d544133f9ddbb4f801807365fed66dbf9885650985c5b2e8337cf19af7",
@@ -18,5 +18,5 @@
     "adam-coding-anywhere/vendor-release-impact-issues": "sha256:7c29bc5f0dc5f34ce510d9a98381d97eb6aa5528e28d903dbd8c304a12b10af1",
     "adam-coding-anywhere/workflow-path-audit": "sha256:0670bcc52f90c9ce2d22bf13acfcaccdc0c7953e5a4fa3406ffe8703611c9f34"
   },
-  "generated_from": "7c01814fbed9eb20608d7f69037b925f4b1a8705"
+  "generated_from": "eeeb02f27120c0bd40e80ffe9e1d96000bdc3cea"
 }
