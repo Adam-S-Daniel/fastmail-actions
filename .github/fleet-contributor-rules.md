@@ -110,9 +110,8 @@ Fleet repos are PR-only on the default branch via ruleset, managed in
 ## PR descriptions open with a TLDR
 
 Start every PR description with a `## TLDR` heading and one to three
-plain-English sentences on what changes and why. Only an attribution block
-(HTML comments, a `_Requested by …_` line) may precede it. `agent-checks`
-fails a PR without it; editing the description re-runs the check.
+plain-English sentences on what changes and why; only an attribution block
+may precede it (`agent-checks` enforces it).
 
 ## A successful `git push` does not mean your commit exists
 
