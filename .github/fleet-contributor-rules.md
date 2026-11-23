@@ -137,14 +137,14 @@ CLOSED without `gitleaks` on `PATH`, which a fresh container lacks.
 
 ## Dependency updates
 
-Dependabot `cooldown`: `default-days: 7` (cms-platform `exclude`d);
-`semver-major-days: 30` where supported (not `github-actions`). Version
-updates only (advisories bypass it); unset still waits 3 days; leave
-`semver-minor-days` / `-patch-days` undefined.
-**By hand**, nothing watches: take the newest release past 7 days
+Dependabot `cooldown`: `default-days: 7`, `semver-major-days: 30` (not
+`github-actions`); advisories and own actions (`exclude` `Adam-S-Daniel/*`,
+`jodidaniel/*`) skip it; unset waits 3 days; leave
+`semver-minor-days`/`-patch-days` undefined. Action bumps auto-merge once it
+passes. **By hand**: newest release past 7 days
 (`npm view <pkg> time --json`), pinned exact. **Harness CLIs are unpinned**
 (Claude Code, Codex; not `uses:` or SDKs): a run installs npm `latest`;
-record its version and the models used.
+record the version and models.
 
 ## A name you choose becomes data a scanner reads
 
