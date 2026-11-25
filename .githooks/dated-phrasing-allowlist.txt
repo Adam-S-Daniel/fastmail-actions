@@ -26,7 +26,6 @@ Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/migrate-claude-m
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/sync-cc-settings-between-wsl-and-windows/SKILL.md :: more-recently-modified-wins
 Adam-S-Daniel/adam-agentskills plugins/adam-non-coding-local/skills/fastmail/SKILL.md :: Confirm the inbox is now visible
 Adam-S-Daniel/cms-platform skills/cms-stuck-pr-triage/SKILL.md :: reported green no longer counts
-Adam-S-Daniel/cms-platform skills/github-actions-sha-pinning/SKILL.md :: can no longer move it, and fails SILENTLY
 Adam-S-Daniel/cms-platform skills/platform-release-and-bump/SKILL.md :: the precondition is now MORE likely
 Adam-S-Daniel/wsl-automation AGENTS.md :: Real, previously-booted distros
 jodidaniel/jodidaniel.com AGENTS.md :: previously partner and

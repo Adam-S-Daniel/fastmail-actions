@@ -1609,6 +1609,7 @@ case "$event" in
     note_ran staged-index
     note_ran push-to-default
     note_ran persistent-delete
+    note_ran bump-branch-push
     if ! git diff --cached --quiet; then
       problem staged-index "the index has staged changes that are in no commit. If your last 'git commit' was refused by a hook, this push would publish the commit before it and report success. Commit or unstage them first (git status), then push."
     fi
@@ -1626,6 +1627,11 @@ case "$event" in
             problem persistent-delete "refusing to delete ${remote_ref#refs/heads/}: persistent/* branches outlive their PRs and hold data (results, usage records), and deleting one loses it. Private repos without rulesets have nothing else to stop this. If it really must go, ask Adam." ;;
         esac
         continue
+      fi
+      # The consumer lock bumper (_agent-guidance scripts/bump-consumer-locks.sh)
+      # owns this branch. Deleting it, above, is the way to free it.
+      if [ "$remote_ref" = refs/heads/skills-lock-bump/update ]; then
+        problem bump-branch-push "refusing to push to skills-lock-bump/update: the skills.lock bumper owns this branch. It merges only a diff that is skills.lock alone and never force-pushes over a commit it did not make, so one more commit here strands its pull request and fails every later bumper run for this repo. Put your change on a branch of its own and open a separate PR. If the bumper's PR is already stranded, close it and delete this branch; the next run proposes a fresh re-pin."
       fi
       content_rev=$local_oid
       if known_commit "$remote_oid"; then
