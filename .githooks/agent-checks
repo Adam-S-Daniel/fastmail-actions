@@ -43,7 +43,9 @@
 # that is right as written, add it to .agent-checks/dated-phrasing-allowlist.txt.
 #
 # local-identity refuses a changed file that holds this machine's own account
-# name in a home path, or its hostname; see "Local identity" below.
+# name in a home path, or its hostname; see "Local identity" below. The privacy
+# check applies those names, and a denylist file when one exists, to each pushed
+# ref name and commit message and identity; see "Privacy in ref names" below.
 #
 # Run log. Each pre-commit and pre-push run (never ci or tree) appends one JSON
 # line to $AGENT_CHECKS_LOG, by default
@@ -191,16 +193,21 @@ CODEX_PROJECT_DOC_MAX_BYTES=32768
 # even to an empty value, replace the lookup (the tests set them). A name that
 # is empty, unavailable or generic is not checked: a user shorter than 3
 # characters or one of the names in local_generic_users; a host shorter than 4
-# characters, localhost, or 12 or more lowercase hex digits (a container id).
+# characters, localhost, one of local_generic_hosts, or 12 or more lowercase
+# hex digits (a container id).
 # Under GitHub Actions (GITHUB_ACTIONS=true) the check never runs: a runner has
 # no personal identity, and a refusal must not print one to a public log. The
 # refusal names the path and line numbers only, never the identity; the run log
 # gets the id and nothing else. Both names are matched as literal text.
 local_generic_users=" root runner user ubuntu agent codex node vscode dev admin administrator codespace gitpod git nobody "
+# Hostnames that are ordinary words or stock image names, so a commit message
+# or file naming them ("move to ubuntu-latest", "fix the build") is not a leak.
+local_generic_hosts=" ubuntu debian fedora centos alpine arch raspberrypi build main master dev devbox server desktop laptop workstation runner home test "
 local_user=""
 local_host=""
 local_user_re=""
 local_host_re=""
+local_host_word_re=""
 
 # local_lower <text> — the text in lowercase.
 local_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -217,6 +224,7 @@ local_identity_init() {
   local_host=""
   local_user_re=""
   local_host_re=""
+  local_host_word_re=""
   [ "${GITHUB_ACTIONS:-}" = true ] && return 0
   if [ -n "${AGENT_CHECKS_LOCAL_USER+x}" ]; then
     u=$AGENT_CHECKS_LOCAL_USER
@@ -239,7 +247,7 @@ local_identity_init() {
     case "$local_generic_users" in *" $lower "*) ;; *) local_user=$u ;; esac
   fi
   lower=$(local_lower "$h")
-  if [ "${#h}" -ge 4 ] && [ "$lower" != localhost ]; then
+  if [ "${#h}" -ge 4 ] && [ "$lower" != localhost ] && [[ "$local_generic_hosts" != *" $lower "* ]]; then
     case "$lower" in
       *[!0-9a-f]*) local_host=$h ;;
       *) [ "${#h}" -ge 12 ] || local_host=$h ;;
@@ -253,6 +261,9 @@ local_identity_init() {
     for h in "$local_host" "$(printf '%s' "$local_host" | tr '[:lower:]' '[:upper:]')" "$(local_lower "$local_host")"; do
       local_host_re="$local_host_re${local_host_re:+|}$(local_regex_escape "$h")"
     done
+    # In a ref name or message a hyphen or underscore separates words
+    # (fix-<host>-thing), so the privacy check's boundary is any non-alphanumeric.
+    local_host_word_re="(^|[^A-Za-z0-9])($local_host_re)([^A-Za-z0-9]|\$)"
     local_host_re="(^|[^A-Za-z0-9_-])($local_host_re)([^A-Za-z0-9_-]|\$)"
   fi
   if [ -n "$local_user$local_host" ]; then note_ran local-identity; fi
@@ -285,6 +296,104 @@ check_local_identity() {
   fi
   [ -n "$what" ] || return 0
   problem local-identity "$path: $what. A public repo ships it to everyone who clones it. Replace it with a placeholder (/home/example, example-user) or name the machine by its role (the dev box, the build host). The identity is not printed here on purpose; the line numbers say where to look. If the name is there as data on purpose (a scrub rule that must spell it), commit once with AGENT_CHECKS_LOCAL_USER= or AGENT_CHECKS_LOCAL_HOST= set to empty."
+}
+
+# ── Privacy in ref names and commits: privacy ────────────────────────────────
+# local-identity reads changed file content only, so a branch name or a commit
+# message that holds this machine's names reaches the remote unchecked, and a
+# pushed branch name is public for good (a hostname once went out in two
+# branch names). The pre-push event therefore checks, for each pushed ref, its
+# name and the message and author and committer identity of every commit the
+# push adds, against two sources of patterns:
+#   always       the names local-identity uses: the account name in a home path
+#                and the hostname (as a whole word in any case, with - and _
+#                counting as separators, in a ref name, a message or an
+#                identity line);
+#   when present the denylist: PRIVACY_DENYLIST (newline-separated patterns),
+#                else the file PRIVACY_DENYLIST_FILE names, else
+#                ~/.config/privacy-denylist.txt. Its patterns are Python regular
+#                expressions matched case-insensitively, which is why the check
+#                is .githooks/privacy-denylist.py (the sync delivers it beside
+#                this file). With no python3 the runner warns and checks the
+#                local names only.
+# A refusal names the place (branch name, <sha> message, <sha> identity) and the
+# pattern number, never the matched text and never the pattern; the run log gets
+# the id and nothing else. Under GitHub Actions the local names are not checked
+# (see local_identity_init); the denylist is the CI-mode check's to run.
+# privacy_warn <message> — one warning line, never a refusal.
+privacy_warn() {
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    printf '::warning title=privacy::%s\n' "$1" >&2
+  else
+    printf 'agent-checks (warning): %s\n' "$1" >&2
+  fi
+}
+
+# privacy_denylist_present — a denylist source exists (it may still be empty).
+privacy_denylist_present() {
+  local f=${PRIVACY_DENYLIST_FILE:-}
+  [ -n "${PRIVACY_DENYLIST:-}" ] && return 0
+  if [ -z "$f" ] && [ -n "${HOME:-}" ]; then f=$HOME/.config/privacy-denylist.txt; fi
+  [ -n "$f" ] && [ -f "$f" ]
+}
+
+# privacy_local_hit <text> — success when the text holds this machine's account
+# name in a home path or its hostname. The text is fed by here-string, never a
+# pipe into grep -q, so a long message cannot race the reader.
+privacy_local_hit() {
+  if [ -n "$local_user_re" ] && LC_ALL=C grep -q -E -e "$local_user_re" <<< "$1"; then return 0; fi
+  if [ -n "$local_host_word_re" ] && LC_ALL=C grep -q -i -E -e "$local_host_word_re" <<< "$1"; then return 0; fi
+  return 1
+}
+
+# privacy_push_ref <remote> <remote_ref> <local_oid> <remote_oid> — check one
+# pushed ref: its name, and the commits the push adds.
+privacy_push_ref() {
+  # $1, the remote, is not used: commits any remote already has are public,
+  # so a push to a fresh fork must not re-check them either.
+  local ref=$2 new=$3 old=$4 commits sha short out rc places place_hits="" privacy_script=${dated_dir:-.}/privacy-denylist.py
+  note_ran privacy
+  local_identity_init
+  # Only commits the remote has nowhere: a branch that merged or rebased onto
+  # main would otherwise drag main's already-public commits in, and no one can
+  # reword those.
+  if known_commit "$old"; then
+    commits=$(git rev-list "$new" --not "$old" --remotes 2> /dev/null) || commits=""
+  else
+    commits=$(git rev-list "$new" --not --remotes 2> /dev/null) || commits=""
+  fi
+  if [ -n "$local_user_re$local_host_re" ]; then
+    if privacy_local_hit "${ref#refs/*/}"; then place_hits="the ref name"; fi
+    for sha in $commits; do
+      short=${sha:0:12}
+      if privacy_local_hit "$(git log -1 --format='%B' "$sha" 2> /dev/null)"; then
+        place_hits="$place_hits${place_hits:+, }$short message"
+      fi
+      if privacy_local_hit "$(git log -1 --format='%an%n%ae%n%cn%n%ce' "$sha" 2> /dev/null)"; then
+        place_hits="$place_hits${place_hits:+, }$short identity"
+      fi
+    done
+  fi
+  if [ -n "$place_hits" ]; then
+    problem privacy "refusing this push: $place_hits holds this machine's account name or hostname, and a pushed ref name or commit message is public for good. Rename the branch (git branch -m) or reword the commit (git commit --amend, or git rebase -r for older ones) with a placeholder or the machine's role, then push again. An identity place is the commit's author or committer name or email: set a public identity (a users.noreply.github.com email) and rewrite it with git commit --amend --reset-author. The identity is not printed here on purpose. If it is there on purpose, push once with AGENT_CHECKS_LOCAL_USER= or AGENT_CHECKS_LOCAL_HOST= set to empty."
+  fi
+  privacy_denylist_present || return 0
+  if ! command -v python3 > /dev/null 2>&1 || [ ! -f "$privacy_script" ]; then
+    privacy_warn "privacy denylist skipped: python3 (or $privacy_script) is not available, so only this machine's own names were checked. Install Python 3 to check the denylist before a push."
+    return 0
+  fi
+  rc=0
+  out=$(python3 "$privacy_script" --repo . --ref "$ref" --commits-stdin <<< "$commits" 2> /dev/null) || rc=$?
+  places=$(printf '%s\n' "$out" | sed '1d' | sed 's/^ *//' | tr '\n' ';')
+  # Python exits 1 on an uncaught exception too, so 1 is a match only when the
+  # checker printed its FAILED: header.
+  if [ "$rc" = 1 ] && [ "${out#FAILED:}" = "$out" ]; then rc=2; fi
+  case "$rc" in
+    0|3) ;;
+    1) problem privacy "refusing this push: a denylisted term is in a ref name or commit the push would publish, and a pushed ref name or commit message is public for good. Fix the branch name (git branch -m) or reword the commit (git commit --amend, or git rebase -r), then push again. An identity place is the commit's author or committer name or email: set a public identity (a users.noreply.github.com email) and rewrite it with git commit --amend --reset-author. The places and pattern numbers follow (the number counts your denylist's patterns from 1, skipping comment and blank lines; the text is never printed): $places" ;;
+    *) problem privacy "the privacy denylist could not be checked (privacy-denylist.py exited $rc: an unreadable or invalid denylist, or git failing), so this push is held. Run python3 $privacy_script --repo . --ref <branch> to see the error, or fix the file." ;;
+  esac
+  return 0
 }
 
 # Reads NUL-separated paths on stdin and refuses the ones that must never be
@@ -1628,6 +1737,7 @@ case "$event" in
         esac
         continue
       fi
+      privacy_push_ref "$remote" "$remote_ref" "$local_oid" "$remote_oid"
       # The consumer lock bumper (_agent-guidance scripts/bump-consumer-locks.sh)
       # owns this branch. Deleting it, above, is the way to free it.
       if [ "$remote_ref" = refs/heads/skills-lock-bump/update ]; then
