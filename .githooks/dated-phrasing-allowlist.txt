@@ -34,7 +34,7 @@ jodidaniel/jodidaniel.com AGENTS.md :: previously partner and
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/github-actions-repo-settings/SKILL.md :: no longer accepted
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-anywhere/skills/skills-doctor/SKILL.md :: in either no longer loads
 Adam-S-Daniel/adam-agentskills plugins/adam-coding-local/skills/migrate-claude-memory/SKILL.md :: 2.1.273 and later no longer loads
-Adam-S-Daniel/adam-agentskills AGENTS.md :: repos from 2026-11-02
+Adam-S-Daniel/adam-agentskills AGENTS.md :: repos from 2026-12-02
 
 # Quoted examples and example data.
 Adam-S-Daniel/adam-agentskills plugins/adam-anything-anywhere/skills/writing-adrs/SKILL.md :: No "as of today the build is broken"
