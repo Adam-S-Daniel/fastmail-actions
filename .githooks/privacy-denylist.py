@@ -25,12 +25,21 @@ adam-agentskills' scripts/check_privacy_denylist.py defines.
 
 Usage:
   privacy-denylist.py [--repo PATH] [--ref NAME]... [--commits-stdin]
+                      [--diff BASE HEAD] [--event-path PATH]
                       [--denylist-file PATH]
 
   --ref NAME        a ref name to check (refs/heads/ and refs/tags/ prefixes
                     are dropped first); repeatable
   --commits-stdin   read commit ids, one per line, from standard input and
                     check each one's message and identity
+  --diff BASE HEAD  scan the lines ADDED between BASE and HEAD (the diff from
+                    their merge base, so lines that landed on BASE's branch do
+                    not count), by new-file line number. A BASE that is empty,
+                    all zeros or not in this clone scans HEAD's own diff
+                    against its parent instead. Binary files are skipped.
+  --event-path PATH a GitHub event payload; scans pull_request.title and
+                    pull_request.body. A payload with no pull_request is
+                    ignored.
 
 Output, on a match (stdout):
   FAILED: <n> denylisted match(es). ...
@@ -38,6 +47,10 @@ Output, on a match (stdout):
     <sha12>:message:<line>: pattern #N
     <sha12>:identity:<line>: pattern #N      (1 author name, 2 author email,
                                               3 committer name, 4 committer email)
+    <path>:<line>: pattern #N                (a line added by --diff)
+    <path withheld>: pattern #N              (an added or renamed path matches)
+    PR title:1: pattern #N                   (--event-path)
+    PR body:<line>: pattern #N
 
 Exit status: 0 clean; 1 a match; 2 the check could not run (an unreadable file,
 an invalid pattern, git failing); 3 no denylist is configured, so nothing was
@@ -45,6 +58,7 @@ checked (the caller decides what that means; locally it is not a failure).
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -165,6 +179,137 @@ def scan_commit(repo: Path, sha: str, patterns: Sequence["re.Pattern[str]"]) -> 
     found.extend(scan_text(identity.decode("utf-8", "replace"), patterns, f"{short}:identity"))
     return found
 
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_ZERO_RE = re.compile(r"^0+$")
+
+
+def _git_ok(repo: Path, *args: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
+def _diff_start(repo: Path, base: str, head: str) -> str:
+    """The commit (or empty tree) the range's added lines are read against. A
+    BASE this clone does not have (empty, all zeros, a force-pushed-away
+    commit) falls back to HEAD against its parent, or the empty tree for a root
+    commit."""
+    if not _SHA_RE.match(head) and head != "HEAD" and not head.startswith("refs/"):
+        raise CheckError("the diff head is not a commit")
+    if base and not _ZERO_RE.match(base) and _SHA_RE.match(base) \
+            and _git_ok(repo, "cat-file", "-e", f"{base}^{{commit}}"):
+        start = base
+        merge_base = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", base, head],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+        )
+        if merge_base.returncode == 0 and merge_base.stdout.strip():
+            start = merge_base.stdout.decode().strip()
+    elif _git_ok(repo, "rev-parse", "--verify", "--quiet", f"{head}^"):
+        start = f"{head}^"
+    else:
+        start = _git(repo, "hash-object", "-t", "tree", "/dev/null").decode().strip()
+    return start
+
+
+# -M on purpose: a pure rename of an old file adds no lines, so it must not
+# re-flag the file's existing content; a rename with edits reports only the
+# edited (added) lines.
+_DIFF_FLAGS = ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-M"]
+
+
+def _diff_text(repo: Path, base: str, head: str) -> bytes:
+    """`git diff -U0` of what BASE..HEAD adds."""
+    return _git(repo, *_DIFF_FLAGS, "-U0", _diff_start(repo, base, head), head, "--")
+
+
+def _added_paths(repo: Path, base: str, head: str) -> List[str]:
+    """Paths the range adds or renames to, empty and binary files included
+    (they have no added lines for the line scan to read)."""
+    raw = _git(repo, *_DIFF_FLAGS, "--name-status", "-z", "--diff-filter=ACR",
+               _diff_start(repo, base, head), head, "--")
+    fields = raw.decode("utf-8", "replace").split("\0")
+    paths: List[str] = []
+    i = 0
+    while i < len(fields) and fields[i]:
+        width = 3 if fields[i][0] in "RC" else 2  # status, [old path,] new path
+        paths.append(fields[i + width - 1] if i + width - 1 < len(fields) else "")
+        i += width
+    return paths
+
+
+def scan_diff(repo: Path, base: str, head: str,
+              patterns: Sequence["re.Pattern[str]"]) -> List[Match]:
+    """Every pattern match on a line the diff adds, as (path:new line, index).
+
+    The diff is read by its hunk headers' line counts, so an added line that
+    happens to read `+++ b/x` is content, not a file header. A path that
+    itself holds a denylisted term is shown as `<path withheld>`."""
+    found: List[Match] = []
+    # A path is public the moment it is pushed: a matching one is a finding of
+    # its own, and its text is never printed.
+    for added in _added_paths(repo, base, head):
+        for index, pattern in enumerate(patterns, start=1):
+            if pattern.search(added):
+                found.append(("<path withheld>", index))
+    path: Optional[str] = None
+    old_left = new_left = new_no = 0
+    for raw in _diff_text(repo, base, head).split(b"\n"):
+        line = raw.decode("utf-8", "replace")
+        if old_left > 0 or new_left > 0:
+            if line.startswith("+"):
+                new_left -= 1
+                text = line[1:].rstrip("\r")  # CRLF files: `$` must still anchor
+                for index, pattern in enumerate(patterns, start=1):
+                    if pattern.search(text):
+                        found.append((f"{_shown(path, patterns)}:{new_no}", index))
+                new_no += 1
+            elif line.startswith("-"):
+                old_left -= 1
+            continue
+        if line.startswith("diff --git "):
+            path = None
+        elif line.startswith("+++ "):
+            name = line[4:].split("\t", 1)[0]
+            path = None if name == "/dev/null" else (name[2:] if name[:2] == "b/" else name)
+        else:
+            hunk = _HUNK_RE.match(line)
+            if hunk:
+                old_left = int(hunk.group(1)) if hunk.group(1) is not None else 1
+                new_no = int(hunk.group(2))
+                new_left = int(hunk.group(3)) if hunk.group(3) is not None else 1
+    return found
+
+
+def _shown(path: Optional[str], patterns: Sequence["re.Pattern[str]"]) -> str:
+    if path is None:
+        return "?"
+    if any(pattern.search(path) for pattern in patterns):
+        return "<path withheld>"
+    return path
+
+
+def scan_event(path: Path, patterns: Sequence["re.Pattern[str]"]) -> List[Match]:
+    """The pull request title and body of a GitHub event payload."""
+    try:
+        event = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise CheckError(f"the event file could not be read ({type(exc).__name__})") from None
+    pull = event.get("pull_request") if isinstance(event, dict) else None
+    if not isinstance(pull, dict):
+        return []
+    found: List[Match] = []
+    for key, where in (("title", "PR title"), ("body", "PR body")):
+        text = pull.get(key)
+        if isinstance(text, str):
+            found.extend(scan_text(text, patterns, where))
+    return found
+
 
 def main(
     argv: Optional[Sequence[str]] = None,
@@ -177,6 +322,10 @@ def main(
                         help="a ref name to check (repeatable)")
     parser.add_argument("--commits-stdin", action="store_true",
                         help="read commit ids, one per line, from stdin")
+    parser.add_argument("--diff", nargs=2, metavar=("BASE", "HEAD"),
+                        help="scan the lines added between BASE and HEAD")
+    parser.add_argument("--event-path", metavar="PATH",
+                        help="a GitHub event payload; scan its PR title and body")
     parser.add_argument("--denylist-file", metavar="PATH", help="the denylist file")
     args = parser.parse_args(argv)
     environ = os.environ if environ is None else environ
@@ -193,6 +342,10 @@ def main(
     try:
         for ref in args.ref:
             found.extend(scan_ref_name(ref, patterns))
+        if args.event_path:
+            found.extend(scan_event(Path(args.event_path), patterns))
+        if args.diff:
+            found.extend(scan_diff(Path(args.repo), args.diff[0], args.diff[1], patterns))
         if args.commits_stdin:
             lines = sys.stdin.read().splitlines() if stdin is None else list(stdin)
             for sha in (line.strip() for line in lines):

@@ -319,7 +319,23 @@ check_local_identity() {
 # A refusal names the place (branch name, <sha> message, <sha> identity) and the
 # pattern number, never the matched text and never the pattern; the run log gets
 # the id and nothing else. Under GitHub Actions the local names are not checked
-# (see local_identity_init); the denylist is the CI-mode check's to run.
+# (see local_identity_init); the denylist is the CI-mode check's to run, below.
+#
+# The ci event scans the whole change against the same denylist (the
+# PRIVACY_DENYLIST secret, which the delivered workflow passes in env:): the
+# lines the range adds, each commit's message and identity, the branch name
+# (GITHUB_HEAD_REF) and the pull request's title and body, which the checker
+# reads from GITHUB_EVENT_PATH itself, so no event field is ever interpolated
+# into this shell. PRIVACY_CI_MODE says what a finding does:
+#   enforce  (the default) a match, or a checker that could not run, refuses;
+#   warn     the escape hatch: every such outcome is a ::warning:: line and the
+#            job still passes. Set AGENT_CHECKS_PRIVACY_CI=warn to use it.
+# A MISSING secret (or one with no pattern), python3 or privacy-denylist.py only
+# ever warns and skips the scan, in both modes: the runner is also synced to repos outside the managed fleet
+# and copied to adopters with no denylist, where failing closed would turn every
+# pull request red. Outside Actions the scan runs only when a denylist file
+# exists, and says nothing otherwise.
+PRIVACY_CI_MODE=${AGENT_CHECKS_PRIVACY_CI:-enforce}
 # privacy_warn <message> — one warning line, never a refusal.
 privacy_warn() {
   if [ "${GITHUB_ACTIONS:-}" = true ]; then
@@ -392,6 +408,61 @@ privacy_push_ref() {
     0|3) ;;
     1) problem privacy "refusing this push: a denylisted term is in a ref name or commit the push would publish, and a pushed ref name or commit message is public for good. Fix the branch name (git branch -m) or reword the commit (git commit --amend, or git rebase -r), then push again. An identity place is the commit's author or committer name or email: set a public identity (a users.noreply.github.com email) and rewrite it with git commit --amend --reset-author. The places and pattern numbers follow (the number counts your denylist's patterns from 1, skipping comment and blank lines; the text is never printed): $places" ;;
     *) problem privacy "the privacy denylist could not be checked (privacy-denylist.py exited $rc: an unreadable or invalid denylist, or git failing), so this push is held. Run python3 $privacy_script --repo . --ref <branch> to see the error, or fix the file." ;;
+  esac
+  return 0
+}
+
+# privacy_ci_finding <message> — a finding of the ci scan: a refusal when
+# enforcing, else a warning.
+privacy_ci_finding() {
+  if [ "$PRIVACY_CI_MODE" = enforce ]; then problem privacy "$1"; else privacy_warn "$1"; fi
+}
+
+# privacy_ci_missing — no usable denylist in a CI run: always a warning, never
+# a refusal, in either mode. The runner is also copied to repos that have no
+# denylist (scratch repos outside the managed fleet, outside adopters of the
+# kit), and failing closed would turn every pull request there red; the fleet's
+# drift report is what flags a managed repo that lost the secret.
+privacy_ci_missing() {
+  note_ran privacy
+  privacy_warn "privacy denylist skipped: no PRIVACY_DENYLIST secret is available to this run (or it holds no pattern; a fork pull request gets none), so this change was not scanned. Add the repository secret PRIVACY_DENYLIST (newline-separated regular expressions) and pass it in the workflow step's env: to scan every pull request."
+}
+
+# run_privacy_ci <base> <head> — the ci event's denylist scan (see above).
+run_privacy_ci() {
+  local base=$1 head=$2 commits out rc places privacy_script=${dated_dir:-.}/privacy-denylist.py
+  local -a args
+  if ! privacy_denylist_present; then
+    # No denylist: outside Actions that is the normal local case, so say nothing.
+    [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+    privacy_ci_missing
+    return 0
+  fi
+  note_ran privacy
+  if ! command -v python3 > /dev/null 2>&1 || [ ! -f "$privacy_script" ]; then
+    # A warning in both modes, like a missing secret: the sync can skip
+    # privacy-denylist.py (a gitignored dated-phrasing file), and an absent
+    # checker is not a finding. A checker that RAN and errored still refuses.
+    privacy_warn "the privacy denylist was not checked: python3 (or $privacy_script) is not available, so this change was not scanned. Install Python 3 (every GitHub-hosted runner has it) and make sure the sync delivered privacy-denylist.py."
+    return 0
+  fi
+  if known_commit "$base"; then
+    commits=$(git rev-list "$head" --not "$base" 2> /dev/null) || commits=""
+  else
+    commits=$(git rev-list -1 "$head" 2> /dev/null) || commits=""
+  fi
+  args=(--repo . --diff "$base" "$head" --commits-stdin)
+  [ -z "${GITHUB_HEAD_REF:-}" ] || args+=(--ref "refs/heads/$GITHUB_HEAD_REF")
+  [ -z "${GITHUB_EVENT_PATH:-}" ] || [ ! -f "$GITHUB_EVENT_PATH" ] || args+=(--event-path "$GITHUB_EVENT_PATH")
+  rc=0
+  out=$(python3 "$privacy_script" "${args[@]}" <<< "$commits" 2> /dev/null) || rc=$?
+  places=$(printf '%s\n' "$out" | sed '1d' | sed 's/^ *//' | tr '\n' ';')
+  if [ "$rc" = 1 ] && [ "${out#FAILED:}" = "$out" ]; then rc=2; fi
+  case "$rc" in
+    0) ;;
+    3) [ "${GITHUB_ACTIONS:-}" != true ] || privacy_ci_missing ;;
+    1) privacy_ci_finding "a denylisted term is in this change (an added line, a commit message or identity, the branch name, or the pull request title or body). Remove or reword it; a commit message or identity needs a rewrite (git commit --amend, or git rebase -r), and the PR title and body can be edited in place. The places and pattern numbers follow (the number counts the denylist's patterns from 1, skipping comment and blank lines; the text is never printed): $places" ;;
+    *) privacy_ci_finding "the privacy denylist could not be checked (privacy-denylist.py exited $rc: an invalid denylist, an unreadable event file, or git failing), so this change was not scanned. Run python3 $privacy_script --repo . --diff <base> <head> to see the error." ;;
   esac
   return 0
 }
@@ -1768,6 +1839,7 @@ case "$event" in
       run_checks < <(paths_in_range -1 "$head")
     fi
     run_pr_tldr
+    run_privacy_ci "$base" "$head"
     ;;
 
   tree)
