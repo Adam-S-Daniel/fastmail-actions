@@ -115,4 +115,27 @@ Describe 'Add-ReceivedFromAddresses.ps1 (mock mode)' {
         $res.ReportBody | Should -Match 'alias1@example\.net'
         $res.ReportBody | Should -Not -Match 'alias4@example\.net'
     }
+
+    It 'logs the failure count and error type, never the address, when an add is rejected (issue 72)' {
+        # A copy of the fixture with one alias the mock server rejects ("rejected-*").
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("od-mock-{0}" -f ([guid]::NewGuid().ToString('N')))
+        Copy-Item -Recurse $script:MockDir $dir
+        $fx = Get-Content -Raw (Join-Path $dir 'fixture.json') | ConvertFrom-Json -AsHashtable
+        $fx.emails += @{ id = 'e9'; _mailbox = 'mb-inbox'; receivedAt = '2025-06-05T10:00:00Z'
+            from = @(@{ name = 'Bob'; email = 'bob@example.com' })
+            'header:X-Delivered-To:asText:all' = @('rejected-one@example.net') }
+        $fx | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $dir 'fixture.json')
+        $outbox = Join-Path ([System.IO.Path]::GetTempPath()) ("od-{0}.jsonl" -f ([guid]::NewGuid().ToString('N')))
+        $out = & pwsh -NoProfile -Command {
+            param($ScriptPath, $MockDir, $Outbox)
+            $env:FASTMAIL_MOCK_OUTBOX = $Outbox
+            $env:FASTMAIL_REPORT_FROM = 'reports@example.net'
+            $env:FASTMAIL_REPORT_TO = 'reports@example.net'
+            & $ScriptPath -MockDir $MockDir -MinDate ([datetime]'2000-01-01') *>&1 | Out-String
+        } -args $script:Script, $dir, $outbox
+        Remove-Item -Recurse -Force $dir, $outbox -ErrorAction SilentlyContinue
+        ($out | Out-String) | Should -Match '1 identity add\(s\) failed \(error types: invalidProperties\)'
+        ($out | Out-String) | Should -Not -Match 'rejected-one'
+        ($out | Out-String) | Should -Not -Match 'mock rejection'
+    }
 }
