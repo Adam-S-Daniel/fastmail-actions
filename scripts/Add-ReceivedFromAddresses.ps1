@@ -171,4 +171,13 @@ Send-FastmailReport -Session $session -From $from -To $to `
     -Identities $identities -Mailboxes $mailboxes | Out-Null
 
 Write-Host "add-received-from-addresses complete (mode: $modeText). Report emailed to the configured recipient."
-if ($results | Where-Object { $_.Status -eq 'failed' }) { exit 1 }
+$failedResults = @($results | Where-Object { $_.Status -eq 'failed' })
+if ($failedResults.Count -gt 0) {
+    # A bare exit 1 after "complete" left scheduled failures undiagnosable
+    # (issue 72). Log the count and Fastmail's error types only: the address and
+    # the free-text description are personal data and stay in the emailed report.
+    $failTypes = @($failedResults | ForEach-Object { if ("$($_.Detail)" -match '^[A-Za-z][A-Za-z ]*') { $Matches[0].Trim() } else { 'unknown error' } } |
+        Sort-Object -Unique)
+    Write-Host "add-received-from-addresses: $($failedResults.Count) identity add(s) failed (error types: $($failTypes -join ', ')). Details are in the emailed report."
+    exit 1
+}
